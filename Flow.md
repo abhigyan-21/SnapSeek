@@ -8,7 +8,7 @@
 
 The user selects a directory containing screenshots through the planned Streamlit UI. SnapSeek discovers supported image files, extracts metadata, reads visible text with OCR, and makes the resulting text searchable. Search results link back to the original images for preview.
 
-The current terminal query is ranked using TF-IDF over OCR text only; it does not search filenames. The keyword substring function remains available internally for future hybrid retrieval. Semantic search is a later planned phase and would search the meaning of extracted text, not every visual element in the image.
+The current terminal query uses semantic similarity over OCR text only; it does not search filenames or image pixels. TF-IDF and keyword search remain available internally as separate retrieval functions. The terminal accepts one query and does not ask the user to choose a search mode.
 
 ## 2. High-level architecture
 
@@ -31,12 +31,12 @@ Screenshot directory (environment variable in Phase 1; UI selection later)
              (main.py)
                 |
                 v
-       TF-IDF ranking
-         (src/snapseek/search.py)
+       Semantic ranking
+         (src/snapseek/semantic.py)
                 |
                 v
        Results: filename, image path,
-       OCR text, and TF-IDF score
+       OCR text, and semantic similarity
                 |
                 v
        Streamlit UI (later phase)
@@ -68,17 +68,19 @@ OCR and the UI are deliberately absent from Phase 1.
 
 | Module | Responsibility | Planned phase |
 |---|---|---|
-| `main.py` | Validates the CLI query and configuration, scans images, coordinates OCR per image, searches in-memory results, and prints results and a summary | Phases 1–3 (implemented) |
+| `main.py` | Validates the CLI query and configuration, scans images, loads semantic search before OCR, coordinates OCR per image, and prints ranked results and a summary | Phases 1–5 (implemented) |
 | `src/snapseek/config.py` | Read `SNAPSEEK_SCREENSHOT_DIR` and report missing or invalid directory configuration | Phase 1 (implemented) |
 | `src/snapseek/scanner.py` | Discover direct-child PNG, JPG, JPEG, and WEBP files case-insensitively; collect file metadata | Phase 1 (implemented) |
 | `src/snapseek/__init__.py` | Mark the SnapSeek source package | Phase 1 (implemented) |
 | `src/snapseek/ocr.py` | Extracts text for one `ImageMetadata` using local Tesseract through `pytesseract`; reports setup and image-specific failures | Phase 2 (implemented) |
 | `src/snapseek/indexer.py` | Coordinate discovery, OCR, and creation/update of indexed records | Phases 2 onward |
-| `src/snapseek/search.py` | Keyword substring matching and TF-IDF ranking over supplied OCR records | Phases 3–4 (implemented); hybrid and semantic retrieval planned |
+| `src/snapseek/search.py` | Keyword substring matching and TF-IDF ranking over supplied OCR records | Phases 3–4 (implemented) |
+| `src/snapseek/semantic.py` | Load FastEmbed lazily and rank supplied OCR records with local semantic embeddings | Phase 5 (implemented) |
 | `tests/test_scanner.py` | Verify configuration and inventory behavior with temporary directories and files | Phase 1 (implemented) |
-| `tests/test_main.py` | Verify application OCR orchestration, output association, continuation, setup errors, and TF-IDF output | Phases 2 and 4 (implemented) |
+| `tests/test_main.py` | Verify application OCR orchestration, output association, continuation, setup errors, and semantic CLI output | Phases 2 and 5 (implemented) |
 | `tests/test_search.py` | Verify keyword behavior and TF-IDF ranking, result association, ties, zero scores, and empty inputs | Phases 3 and 4 (implemented) |
-| `Streamlit UI` | One search box with retrieval behavior chosen internally, result gallery, OCR snippets, scores, and useful status messages | Phase 6 |
+| `tests/test_semantic.py` | Verify semantic scoring, record association, ties, errors, and empty inputs with fake embeddings | Phase 5 (implemented) |
+| `Streamlit UI` | One search box with retrieval behavior chosen internally, result gallery, OCR snippets, scores, and useful status messages | Phase 6 (planned) |
 
 Create modules gradually. Do not add a module merely to match a diagram if its responsibility is not needed yet.
 
@@ -129,16 +131,15 @@ This function remains available as a building block; the Phase 4 CLI uses TF-IDF
 
 The vectorizer is fitted for each search run and is not cached or persisted. Empty collections, corpora without usable terms, and queries with no vocabulary overlap return no matches. Phrase queries rank by their component words rather than requiring an exact phrase.
 
-### Level 3 — Semantic search (planned and optional)
+### Level 3 — Semantic search (implemented)
 
-1. Load a pretrained Sentence Transformers model.
-2. Encode each screenshot's OCR text.
-3. Encode the user's query.
-4. Compare embeddings and rank results by semantic similarity.
-5. Cache embeddings and reuse them until the source text changes.
-6. If the model is unavailable, keep the non-semantic search modes usable.
+1. Load FastEmbed and `sentence-transformers/all-MiniLM-L6-v2` lazily after configuration and scanning.
+2. Batch-encode nonempty OCR text records and encode the query once.
+3. Compare each document vector with the query vector using cosine similarity.
+4. Return all nonempty OCR records ordered by descending score; break equal scores by normalized POSIX image path. No score threshold is applied.
+5. Reuse the encoder and generated vectors for this search invocation only; do not persist or cache them across runs.
 
-**Limitation:** In the initial design, semantic search searches the meaning of extracted text. It does not automatically understand objects, diagrams, or other image content that OCR did not capture.
+The model downloads on first use when it is not already cached. A missing FastEmbed package or model load/download failure is reported before OCR starts. OCR text and images remain local; only the public model files are downloaded. Semantic search searches the meaning of extracted text, not objects, diagrams, or image content OCR did not capture. No real-model quality evaluation has been performed.
 
 ## 6. Error and edge-case flow
 
@@ -151,6 +152,9 @@ The vectorizer is fitted for each search run and is not cached or persisted. Emp
 - **Integrated image-specific OCR failure:** `main.py` warns to standard error and continues with later images; the final status is non-zero if any image failed.
 - **Integrated OCR setup failure:** `main.py` reports the setup error once, stops OCR calls, reports unprocessed images in the summary, and returns a non-zero status.
 - **TF-IDF dependency unavailable:** TF-IDF search reports an actionable scikit-learn installation error and returns a non-zero status; keyword search itself does not require scikit-learn.
+- **FastEmbed unavailable:** Semantic setup reports an actionable dependency error before OCR starts and returns a non-zero status.
+- **Semantic model unavailable:** A first-download or local model-load failure is reported before OCR starts; the application does not silently fall back to TF-IDF.
+- **Semantic inference failure:** Report a semantic search error and return a non-zero status after OCR; unrelated programming errors are not intentionally converted into semantic errors.
 - **Unsupported extension:** Ignore the file.
 - **Unreadable/corrupt image:** Record or report the failure and continue with other images.
 - **No OCR text:** Keep the image record; represent empty OCR output safely.
@@ -191,8 +195,8 @@ Use the same labeled query set for each approach so the comparison is meaningful
    - **Gate:** the user reports a successful real Tesseract run on a screenshot. Unit tests do not establish general Tesseract recognition quality.
 3. **Phase 3 — Keyword search (implemented):** retain the internal keyword function for case-insensitive OCR-text substring matching.
 4. **Phase 4 — TF-IDF (implemented):** the same positional CLI query uses TF-IDF ranking internally, without a manual mode selector. Keyword search remains a separate tested function for future hybrid retrieval. Scores are descending, zero-score records are excluded, and ties use normalized image paths. No persistence, cache, hybrid ranking, or semantic search is included.
-5. **Phase 5 — Semantic search:** embeddings, caching, comparison with TF-IDF.
-6. **Phase 6 — Streamlit:** search modes, image previews, snippets, status/error states.
+5. **Phase 5 — Semantic search (implemented):** FastEmbed embeddings and cosine ranking are the default behind the existing single query; TF-IDF and keyword functions remain available internally. The model and vectors are reused only during the current run; there is no persistent cache or threshold.
+6. **Phase 6 — Streamlit (planned):** one search box, image previews, snippets, scores, and status/error states; the retrieval engine chooses behavior internally.
 7. **Phase 7 — Evaluation and documentation:** labeled queries, metrics, setup guide, sanitized repository.
 
 Do not move to the next phase until the current gate has been demonstrated and the developer confirms proceeding.
@@ -205,10 +209,10 @@ After each meaningful implementation:
 - Note important error paths and caching behavior.
 - Keep architecture changes consistent with `Decisions.md`.
 
-## Phase 3–4 implementation status (current)
+## Phase 3–5 implementation status (current)
 
 The current terminal flow accepts one positional query while retaining `SNAPSEEK_SCREENSHOT_DIR` for directory configuration. `main.py` validates the nonblank query before reading configuration, scans once, calls OCR once per discovered image until a setup error occurs, and creates an `OCRTextRecord` for each successful OCR result. Image-specific OCR errors warn and continue; missing OCR setup reports one error and stops further OCR attempts. The OCR summary counts discovered images, successes, failures, and unprocessed images. The entry point passes the successful records to `search_tfidf()`; it does not rescan or rerun OCR during search.
 
-`search_keyword()` keeps its Phase 3 case-insensitive substring behavior and is available internally. `search_tfidf()` fits a word-unigram TF-IDF model to current OCR records, scores them by cosine similarity, excludes zero-score records, and orders ties by normalized path. Ranked results retain the source record and display filename, path, score, and OCR text. Empty OCR documents, empty collections, all-unusable corpora, and queries with no vocabulary overlap produce no matches. The vectorizer and OCR results exist only in memory for the run; there is no cache or persistence. A blank query is rejected before directory access. TF-IDF is the current CLI engine; users do not select a search mode.
+`search_keyword()` keeps its Phase 3 case-insensitive substring behavior and `search_tfidf()` keeps its Phase 4 ranking behavior. The Phase 5 CLI instead calls `search_semantic()` with the successful OCR records. Semantic results retain their source record and display filename, path, similarity score, and OCR text. Empty/whitespace OCR documents are skipped; empty collections return no results. All other nonempty documents are returned without a threshold and sorted by descending cosine similarity, then normalized path. FastEmbed and the model load before OCR; vectors are reused only for the current invocation. A blank query is rejected before directory access. The user does not select a search mode.
 
-The user reported a successful real Tesseract OCR run on a screenshot. This is user-reported verification. The Phase 4 automated tests use real scikit-learn vectors but mock OCR; they do not independently verify real Tesseract recognition or quality. Hybrid retrieval, semantic search, persistence, and UI remain future work.
+The user reported a successful real Tesseract OCR run on a screenshot; that remains user-reported verification. Phase 5 semantic tests use fake embeddings and do not download or evaluate the real model. No real-model semantic quality evaluation has been performed. Hybrid retrieval, persistence, and UI remain future work.

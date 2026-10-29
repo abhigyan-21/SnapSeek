@@ -15,7 +15,25 @@ from snapseek.ocr import (
     TesseractExecutableError,
 )
 from snapseek.scanner import ImageMetadata
-from snapseek.search import SearchDependencyError
+from snapseek.semantic import (
+    SemanticDependencyError,
+    SemanticInferenceError,
+    SemanticModelError,
+)
+
+
+class FakeSemanticEncoder:
+    def __init__(self) -> None:
+        self.documents: list[str] = []
+        self.queries: list[str] = []
+
+    def embed(self, documents):
+        self.documents.extend(documents)
+        return [(1.0, 0.0) if "first" in text else (0.8, 0.6) for text in self.documents]
+
+    def query_embed(self, query):
+        self.queries.append(query)
+        return [(1.0, 0.0)]
 
 
 class MainOCRIntegrationTests(unittest.TestCase):
@@ -31,6 +49,10 @@ class MainOCRIntegrationTests(unittest.TestCase):
         )
         self.config_patch.start()
         self.addCleanup(self.config_patch.stop)
+        self.encoder = FakeSemanticEncoder()
+        self.encoder_patch = patch("main.load_semantic_encoder", return_value=self.encoder)
+        self.encoder_patch.start()
+        self.addCleanup(self.encoder_patch.stop)
 
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
@@ -46,7 +68,7 @@ class MainOCRIntegrationTests(unittest.TestCase):
         ocr_mock.assert_has_calls([call(self.images[0]), call(self.images[1])])
         self.assertEqual(ocr_mock.call_count, 2)
         self.assertIn(
-            f"{self.images[0].filename} | {self.images[0].path} | Score: ",
+            f"{self.images[0].filename} | {self.images[0].path} | Similarity: ",
             output.getvalue(),
         )
         self.assertIn(
@@ -54,11 +76,13 @@ class MainOCRIntegrationTests(unittest.TestCase):
             output.getvalue(),
         )
         self.assertIn(
-            f"{self.images[1].filename} | {self.images[1].path} | Score: ",
+            f"{self.images[1].filename} | {self.images[1].path} | Similarity: ",
             output.getvalue(),
         )
         self.assertIn("OCR text: second NEEDLE text", output.getvalue())
-        self.assertRegex(output.getvalue(), r"Score: 0\.\d{4}")
+        self.assertRegex(output.getvalue(), r"Similarity: 0\.\d{4}")
+        self.assertEqual(self.encoder.documents, ["first needle text", "second NEEDLE text"])
+        self.assertEqual(self.encoder.queries, ["needle"])
         self.assertIn("Total images: 2", output.getvalue())
         self.assertIn("OCR summary: 2 succeeded, 0 failed, 0 not processed.", output.getvalue())
         self.assertEqual(status, 0)
@@ -117,24 +141,54 @@ class MainOCRIntegrationTests(unittest.TestCase):
                 self.assertIn(message, errors.getvalue())
                 self.assertIn("2 not processed", output.getvalue())
 
-    def test_missing_tfidf_dependency_is_reported_once_after_ocr(self) -> None:
+    def test_missing_semantic_dependency_is_reported_before_ocr(self) -> None:
         errors = StringIO()
         output = StringIO()
-        missing_dependency = SearchDependencyError(
-            "TF-IDF search requires scikit-learn. Install SnapSeek's Python dependencies."
+        missing_dependency = SemanticDependencyError(
+            "Semantic search requires FastEmbed. Install SnapSeek's Python dependencies."
         )
         with patch("main.scan_images", return_value=self.images), \
-             patch("main.extract_text", side_effect=["payment failed", "payment received"]) as ocr_mock, \
-             patch("snapseek.search.import_module", side_effect=missing_dependency), \
+             patch("main.extract_text") as ocr_mock, \
+             patch("main.load_semantic_encoder", side_effect=missing_dependency), \
              redirect_stdout(output), redirect_stderr(errors):
             status = main.main(["payment"])
 
         self.assertEqual(status, 1)
-        self.assertEqual(ocr_mock.call_count, 2)
-        self.assertEqual(errors.getvalue().count("Error: Search setup failed"), 1)
-        self.assertIn("scikit-learn", errors.getvalue())
+        ocr_mock.assert_not_called()
+        self.assertEqual(errors.getvalue().count("Error: Semantic search setup failed"), 1)
+        self.assertIn("FastEmbed", errors.getvalue())
         self.assertNotIn("No matching images found", output.getvalue())
-        self.assertIn("OCR summary: 2 succeeded, 0 failed, 0 not processed.", output.getvalue())
+        self.assertIn("OCR summary: 0 succeeded, 0 failed, 2 not processed.", output.getvalue())
+
+    def test_model_initialization_failure_is_reported_before_ocr(self) -> None:
+        errors = StringIO()
+        output = StringIO()
+        model_error = SemanticModelError("model download failed")
+        with patch("main.scan_images", return_value=self.images), \
+             patch("main.extract_text") as ocr_mock, \
+             patch("main.load_semantic_encoder", side_effect=model_error), \
+             redirect_stdout(output), redirect_stderr(errors):
+            status = main.main(["payment"])
+
+        self.assertEqual(status, 1)
+        ocr_mock.assert_not_called()
+        self.assertEqual(errors.getvalue().count("Semantic search setup failed"), 1)
+        self.assertIn("model download failed", errors.getvalue())
+        self.assertIn("2 not processed", output.getvalue())
+
+    def test_semantic_inference_failure_returns_nonzero(self) -> None:
+        errors = StringIO()
+        output = StringIO()
+        with patch("main.scan_images", return_value=[self.images[0]]), \
+             patch("main.extract_text", return_value="some OCR text"), \
+             patch("main.search_semantic", side_effect=SemanticInferenceError("inference failed")), \
+             redirect_stdout(output), redirect_stderr(errors):
+            status = main.main(["query"])
+
+        self.assertEqual(status, 1)
+        self.assertIn("Semantic search failed", errors.getvalue())
+        self.assertIn("inference failed", errors.getvalue())
+        self.assertIn("OCR summary: 1 succeeded, 0 failed, 0 not processed.", output.getvalue())
 
     def test_configuration_error_keeps_nonzero_status(self) -> None:
         output = StringIO()

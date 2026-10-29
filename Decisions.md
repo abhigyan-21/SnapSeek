@@ -38,7 +38,7 @@
 ### D-005 — Start with a small module structure
 - **Status:** Accepted by PRD
 - **Context:** Separating responsibilities is useful, but creating abstractions too early adds complexity.
-- **Decision:** Use the `src/snapseek/` package and create modules only when needed: `scanner.py`, `ocr.py`, `search.py`, and `indexer.py`.
+- **Decision:** Use the `src/snapseek/` package and create modules only when needed: `scanner.py`, `ocr.py`, `search.py`, `semantic.py`, and `indexer.py`.
 - **Rationale:** Keep scanning, OCR, search, and coordination separate without creating empty abstractions prematurely.
 - **Consequences:** `main.py` is the initial entry point; the architecture can expand as features are implemented.
 
@@ -140,6 +140,14 @@
 - **Rationale:** TF-IDF adds relevance ranking while keeping keyword matching available as a modular component for future hybrid retrieval. The CLI stays simple and OCR results are reused within the current run.
 - **Alternatives considered:** Replace keyword search; expose a permanent user-facing mode switch; add automatic hybrid ranking during Phase 4.
 - **Consequences:** Phase 4 CLI results can differ from Phase 3 substring matches, while the `search_keyword()` API behavior stays intact. No model, OCR text, or vectorizer is persisted or cached. Semantic and hybrid search remain future work.
+
+### D-019 — Use local semantic embeddings as the Phase 5 default search
+- **Status:** Accepted by user for Phase 5
+- **Context:** The product uses one natural query input without a search-mode selector, and semantic search should operate locally over OCR text.
+- **Decision:** Add FastEmbed with `sentence-transformers/all-MiniLM-L6-v2` and route the existing CLI query through `search_semantic()`. Preserve `search_keyword()` and `search_tfidf()` behavior. Return every nonempty OCR document ranked by cosine similarity, without a score threshold, and break ties by normalized POSIX image path. Load the model before OCR where there are discovered images, batch-encode documents once, encode the query once, and keep generated vectors in memory for the invocation only.
+- **Rationale:** FastEmbed provides a small CPU-capable ONNX runtime path that supports the project's Python 3.11–3.13 range. The separate semantic component keeps the existing search functions independently usable and testable.
+- **Alternatives considered:** Replace the existing search functions; expose a CLI mode selector; combine TF-IDF and semantic scores before relevance evaluation.
+- **Consequences:** The `fastembed>=0.9,<1.0` dependency is added. FastEmbed's downloaded model files are kept in its local model cache for later offline use; SnapSeek does not persist OCR records or embeddings. A missing dependency/model fails clearly without falling back to TF-IDF. Relevance thresholds and hybrid ranking remain deferred until evaluation.
 
 ## Proposed decisions to discuss
 

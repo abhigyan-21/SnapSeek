@@ -11,10 +11,14 @@ from snapseek.ocr import (
     extract_text,
 )
 from snapseek.scanner import scan_images
-from snapseek.search import (
-    OCRTextRecord,
-    SearchDependencyError,
-    search_tfidf,
+from snapseek.search import OCRTextRecord
+from snapseek.semantic import (
+    SemanticDependencyError,
+    SemanticModelError,
+    SemanticSearchError,
+    TextEncoder,
+    load_semantic_encoder,
+    search_semantic,
 )
 
 
@@ -47,6 +51,19 @@ def main(argv: list[str] | None = None) -> int:
             "Check that the directory exists and is readable."
         )
         return 1
+
+    encoder: TextEncoder | None = None
+    if images:
+        try:
+            encoder = load_semantic_encoder()
+        except (SemanticDependencyError, SemanticModelError) as error:
+            print(f"Error: Semantic search setup failed: {error}", file=sys.stderr)
+            print(f"Total images: {len(images)}")
+            print(
+                f"OCR summary: 0 succeeded, 0 failed, {len(images)} not processed."
+            )
+            return 1
+
     successes = 0
     failures = 0
     setup_error = False
@@ -79,9 +96,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
-        matches = search_tfidf(args.query, records)
-    except SearchDependencyError as error:
-        print(f"Error: Search setup failed: {error}", file=sys.stderr)
+        matches = search_semantic(args.query, records, encoder=encoder)
+    except SemanticSearchError as error:
+        print(f"Error: Semantic search failed: {error}", file=sys.stderr)
         return 1
 
     print(f"Search results for {args.query!r}:")
@@ -91,7 +108,7 @@ def main(argv: list[str] | None = None) -> int:
         for record in matches:
             print(
                 f"{record.record.image.filename} | {record.record.image.path} | "
-                f"Score: {record.score:.4f} | "
+                f"Similarity: {record.score:.4f} | "
                 f"OCR text: {record.record.ocr_text}"
             )
     return 1 if setup_error or failures else 0
