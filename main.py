@@ -1,5 +1,6 @@
-"""Print an inventory of supported images in the configured directory."""
+"""Search OCR text from supported images in the configured directory."""
 
+import argparse
 import sys
 
 from snapseek.config import ConfigurationError, get_screenshot_directory
@@ -10,10 +11,28 @@ from snapseek.ocr import (
     extract_text,
 )
 from snapseek.scanner import scan_images
+from snapseek.search import (
+    OCRTextRecord,
+    SearchDependencyError,
+    search_tfidf,
+)
 
 
-def main() -> int:
-    """Print inventory and OCR text, returning a non-zero status on errors."""
+def _non_empty_query(value: str) -> str:
+    """Reject empty CLI queries before scanning or running OCR."""
+    if not value.strip():
+        raise argparse.ArgumentTypeError(
+            "Search query must not be empty or whitespace-only."
+        )
+    return value
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Search screenshot OCR text, returning non-zero status on errors."""
+    parser = argparse.ArgumentParser(description="Search screenshot OCR text.")
+    parser.add_argument("query", type=_non_empty_query, help="word or phrase to search")
+    args = parser.parse_args(argv)
+
     try:
         directory = get_screenshot_directory()
     except ConfigurationError as error:
@@ -31,6 +50,7 @@ def main() -> int:
     successes = 0
     failures = 0
     setup_error = False
+    records: list[OCRTextRecord] = []
     for image in images:
         try:
             text = extract_text(image)
@@ -46,11 +66,7 @@ def main() -> int:
             failures += 1
             continue
 
-        text_summary = text if text else "(no text detected)"
-        print(
-            f"{image.filename} | {image.path} | {image.extension} | "
-            f"{image.size_bytes} bytes | OCR text: {text_summary}"
-        )
+        records.append(OCRTextRecord(image=image, ocr_text=text))
         successes += 1
 
     print(f"Total images: {len(images)}")
@@ -59,6 +75,25 @@ def main() -> int:
         f"OCR summary: {successes} succeeded, {failures} failed, "
         f"{not_processed} not processed."
     )
+    if setup_error:
+        return 1
+
+    try:
+        matches = search_tfidf(args.query, records)
+    except SearchDependencyError as error:
+        print(f"Error: Search setup failed: {error}", file=sys.stderr)
+        return 1
+
+    print(f"Search results for {args.query!r}:")
+    if not matches:
+        print("No matching images found.")
+    else:
+        for record in matches:
+            print(
+                f"{record.record.image.filename} | {record.record.image.path} | "
+                f"Score: {record.score:.4f} | "
+                f"OCR text: {record.record.ocr_text}"
+            )
     return 1 if setup_error or failures else 0
 
 

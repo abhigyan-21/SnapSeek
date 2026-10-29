@@ -127,7 +127,7 @@ class MainTests(unittest.TestCase):
             with patch.dict(os.environ, {"SNAPSEEK_SCREENSHOT_DIR": str(directory)}), \
                  patch.object(Path, "iterdir", side_effect=PermissionError("permission denied")), \
                  redirect_stdout(output):
-                status = main.main()
+                status = main.main(["text"])
 
         self.assertEqual(status, 1)
         self.assertIn("Could not scan image directory", output.getvalue())

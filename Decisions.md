@@ -116,7 +116,30 @@
 - **Decision:** `main.py` calls `scan_images()` once, then `extract_text()` for each returned image and prints successful OCR text beside that image's filename and path. An `ImageOCRError` produces a warning and processing continues. OCR setup errors are reported once, stop further OCR calls, and leave remaining images counted as not processed. Any image-level OCR failure or setup failure returns status 1.
 - **Rationale:** This keeps orchestration/output in the entry point, maintains the module boundaries, and makes partial failures visible without abandoning later images.
 - **Alternatives considered:** Add OCR to the scanner; stop the complete run at the first image-specific error; return success despite image-level failures.
-- **Consequences:** OCR results are printed for this run only; no persistence is introduced. A real Tesseract run is still required to verify OCR quality and executable setup.
+- **Consequences:** OCR results are held for the run only; no persistence is introduced. At the time of this decision, a real Tesseract run remained outstanding; D-016 records the later user-reported check.
+
+### D-016 — Record the user-reported real OCR check
+- **Status:** Confirmed by user report
+- **Context:** Earlier Phase 2 documentation said that real Tesseract OCR had not been tested.
+- **Decision:** Record that the user successfully ran real Tesseract OCR on a screenshot. Keep this distinct from mocked tests run by the development workflow.
+- **Rationale:** Documentation should reflect the reported manual verification without implying that every environment or OCR quality case was independently verified.
+- **Consequences:** Real OCR execution and successful recognition are user-reported; automated tests remain deterministic mocked tests, not real OCR tests.
+
+### D-017 — Implement in-memory keyword search
+- **Status:** Accepted by user for Phase 3
+- **Context:** OCR text needs a simple searchable baseline before persistence or ranking approaches are added.
+- **Decision:** Add `src/snapseek/search.py` with an immutable `OCRTextRecord` pairing existing `ImageMetadata` with OCR text. Search supplied records using case-insensitive substring matching; reject blank queries and preserve input order.
+- **Rationale:** A small pure function is reusable and testable without rescanning directories or invoking OCR. A positional CLI query provides a simple terminal interface while the screenshot directory remains configured through `SNAPSEEK_SCREENSHOT_DIR`.
+- **Alternatives considered:** Put matching into `main.py` or `ocr.py`; rescan or rerun OCR during each match.
+- **Consequences:** At the end of Phase 3, `main.py` searched in-memory records and no ranking or persistence was present. D-018 records the Phase 4 TF-IDF behavior; semantic search and UI remain future work.
+
+### D-018 — Add TF-IDF as the Phase 4 internal ranking engine
+- **Status:** Accepted by user for Phase 4
+- **Context:** SnapSeek's eventual search experience should use one natural query input without asking users to choose a retrieval mode.
+- **Decision:** Preserve `search_keyword()` and its tested substring behavior, add `search_tfidf()` using scikit-learn, and route the existing positional query through TF-IDF in Phase 4 without a mode selector. Return typed scored results retaining each `OCRTextRecord`. Include only positive scores, rank descending, and break ties by normalized image path. Use default word unigrams.
+- **Rationale:** TF-IDF adds relevance ranking while keeping keyword matching available as a modular component for future hybrid retrieval. The CLI stays simple and OCR results are reused within the current run.
+- **Alternatives considered:** Replace keyword search; expose a permanent user-facing mode switch; add automatic hybrid ranking during Phase 4.
+- **Consequences:** Phase 4 CLI results can differ from Phase 3 substring matches, while the `search_keyword()` API behavior stays intact. No model, OCR text, or vectorizer is persisted or cached. Semantic and hybrid search remain future work.
 
 ## Proposed decisions to discuss
 

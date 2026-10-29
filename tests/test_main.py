@@ -15,6 +15,7 @@ from snapseek.ocr import (
     TesseractExecutableError,
 )
 from snapseek.scanner import ImageMetadata
+from snapseek.search import SearchDependencyError
 
 
 class MainOCRIntegrationTests(unittest.TestCase):
@@ -37,21 +38,27 @@ class MainOCRIntegrationTests(unittest.TestCase):
     def test_scans_and_ocr_processes_each_image_with_associated_text(self) -> None:
         output = StringIO()
         with patch("main.scan_images", return_value=self.images) as scan_mock, \
-             patch("main.extract_text", side_effect=["first text", "second text"]) as ocr_mock, \
+             patch("main.extract_text", side_effect=["first needle text", "second NEEDLE text"]) as ocr_mock, \
              redirect_stdout(output):
-            status = main.main()
+            status = main.main(["needle"])
 
         scan_mock.assert_called_once_with(self.directory)
         ocr_mock.assert_has_calls([call(self.images[0]), call(self.images[1])])
         self.assertEqual(ocr_mock.call_count, 2)
         self.assertIn(
-            f"{self.images[0].path} | .png | 11 bytes | OCR text: first text",
+            f"{self.images[0].filename} | {self.images[0].path} | Score: ",
             output.getvalue(),
         )
         self.assertIn(
-            f"{self.images[1].path} | .jpg | 22 bytes | OCR text: second text",
+            f"OCR text: first needle text",
             output.getvalue(),
         )
+        self.assertIn(
+            f"{self.images[1].filename} | {self.images[1].path} | Score: ",
+            output.getvalue(),
+        )
+        self.assertIn("OCR text: second NEEDLE text", output.getvalue())
+        self.assertRegex(output.getvalue(), r"Score: 0\.\d{4}")
         self.assertIn("Total images: 2", output.getvalue())
         self.assertIn("OCR summary: 2 succeeded, 0 failed, 0 not processed.", output.getvalue())
         self.assertEqual(status, 0)
@@ -61,9 +68,9 @@ class MainOCRIntegrationTests(unittest.TestCase):
         with patch("main.scan_images", return_value=[self.images[0]]), \
              patch("main.extract_text", return_value=""), \
              redirect_stdout(output):
-            status = main.main()
+            status = main.main(["needle"])
 
-        self.assertIn("OCR text: (no text detected)", output.getvalue())
+        self.assertIn("No matching images found.", output.getvalue())
         self.assertIn("OCR summary: 1 succeeded, 0 failed, 0 not processed.", output.getvalue())
         self.assertEqual(status, 0)
 
@@ -81,7 +88,7 @@ class MainOCRIntegrationTests(unittest.TestCase):
         with patch("main.scan_images", return_value=images), \
              patch("main.extract_text", side_effect=fake_extract) as ocr_mock, \
              redirect_stdout(output), redirect_stderr(errors):
-            status = main.main()
+            status = main.main(["text"])
 
         self.assertEqual(ocr_mock.call_args_list, [call(image) for image in images])
         self.assertIn(f"Warning: OCR failed for image {self.images[1].path}", errors.getvalue())
@@ -102,7 +109,7 @@ class MainOCRIntegrationTests(unittest.TestCase):
                 with patch("main.scan_images", return_value=self.images), \
                      patch("main.extract_text", side_effect=error_type(message)) as ocr_mock, \
                      redirect_stdout(output), redirect_stderr(errors):
-                    status = main.main()
+                    status = main.main(["text"])
 
                 self.assertEqual(status, 1)
                 self.assertEqual(ocr_mock.call_count, 1)
@@ -110,11 +117,30 @@ class MainOCRIntegrationTests(unittest.TestCase):
                 self.assertIn(message, errors.getvalue())
                 self.assertIn("2 not processed", output.getvalue())
 
+    def test_missing_tfidf_dependency_is_reported_once_after_ocr(self) -> None:
+        errors = StringIO()
+        output = StringIO()
+        missing_dependency = SearchDependencyError(
+            "TF-IDF search requires scikit-learn. Install SnapSeek's Python dependencies."
+        )
+        with patch("main.scan_images", return_value=self.images), \
+             patch("main.extract_text", side_effect=["payment failed", "payment received"]) as ocr_mock, \
+             patch("snapseek.search.import_module", side_effect=missing_dependency), \
+             redirect_stdout(output), redirect_stderr(errors):
+            status = main.main(["payment"])
+
+        self.assertEqual(status, 1)
+        self.assertEqual(ocr_mock.call_count, 2)
+        self.assertEqual(errors.getvalue().count("Error: Search setup failed"), 1)
+        self.assertIn("scikit-learn", errors.getvalue())
+        self.assertNotIn("No matching images found", output.getvalue())
+        self.assertIn("OCR summary: 2 succeeded, 0 failed, 0 not processed.", output.getvalue())
+
     def test_configuration_error_keeps_nonzero_status(self) -> None:
         output = StringIO()
         with patch("main.get_screenshot_directory", side_effect=ConfigurationError("bad config")), \
              patch("main.scan_images") as scan_mock, redirect_stdout(output):
-            status = main.main()
+            status = main.main(["text"])
 
         self.assertEqual(status, 1)
         self.assertIn("Error: bad config", output.getvalue())
@@ -124,11 +150,39 @@ class MainOCRIntegrationTests(unittest.TestCase):
         output = StringIO()
         with patch("main.scan_images", side_effect=PermissionError("permission denied")), \
              redirect_stdout(output):
-            status = main.main()
+            status = main.main(["text"])
 
         self.assertEqual(status, 1)
         self.assertIn("Could not scan image directory", output.getvalue())
         self.assertIn("readable", output.getvalue())
+
+    def test_empty_query_is_rejected_before_configuration_or_ocr(self) -> None:
+        errors = StringIO()
+        with patch("main.get_screenshot_directory") as config_mock, \
+             patch("main.extract_text") as ocr_mock, \
+             redirect_stderr(errors):
+            with self.assertRaises(SystemExit) as exit_info:
+                main.main(["   "])
+
+        self.assertEqual(exit_info.exception.code, 2)
+        self.assertIn("must not be empty or whitespace-only", errors.getvalue())
+        config_mock.assert_not_called()
+        ocr_mock.assert_not_called()
+
+    def test_empty_directory_reports_no_matches_and_zero_counts(self) -> None:
+        output = StringIO()
+        with patch("main.get_screenshot_directory", return_value=self.directory), \
+             patch("main.scan_images", return_value=[]) as scan_mock, \
+             patch("main.extract_text") as ocr_mock, \
+             redirect_stdout(output):
+            status = main.main(["needle"])
+
+        self.assertEqual(status, 0)
+        scan_mock.assert_called_once_with(self.directory)
+        ocr_mock.assert_not_called()
+        self.assertIn("Total images: 0", output.getvalue())
+        self.assertIn("OCR summary: 0 succeeded, 0 failed, 0 not processed.", output.getvalue())
+        self.assertIn("No matching images found.", output.getvalue())
 
 
 if __name__ == "__main__":
