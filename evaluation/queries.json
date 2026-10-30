@@ -1,0 +1,17 @@
+{
+  "dataset": "snapseek-synthetic-v1",
+  "queries": [
+    {"id": "payment_declined", "query": "declined card payment", "relevant_ids": ["receipt_payment_declined", "dashboard_refunds"]},
+    {"id": "duplicate_refund", "query": "refund for a duplicate charge", "relevant_ids": ["receipt_duplicate_refund", "dashboard_refunds"]},
+    {"id": "design_review", "query": "design review at three in Maple room", "relevant_ids": ["chat_meeting_room", "calendar_team_sync"]},
+    {"id": "flight_delay", "query": "flight delayed by the airline", "relevant_ids": ["email_flight_delay"]},
+    {"id": "python_module", "query": "missing Python module error", "relevant_ids": ["error_python_module"]},
+    {"id": "network_timeout", "query": "network request timed out", "relevant_ids": ["error_network_timeout"]},
+    {"id": "regional_sales", "query": "monthly sales by region", "relevant_ids": ["dashboard_sales"]},
+    {"id": "train_departure", "query": "where does the train leave", "relevant_ids": ["map_train_route"]},
+    {"id": "package_delivery", "query": "package delivered to the front desk", "relevant_ids": ["chat_package_delivery"]},
+    {"id": "storage_invoice", "query": "renewal invoice for cloud storage", "relevant_ids": ["invoice_cloud_storage"]},
+    {"id": "office_wifi", "query": "connect to the office wireless network", "relevant_ids": ["settings_wifi"]},
+    {"id": "password_reset", "query": "reset a forgotten account password", "relevant_ids": ["browser_password_reset"]}
+  ]
+}

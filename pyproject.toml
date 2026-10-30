@@ -7,7 +7,10 @@ name = "snapseek"
 version = "0.1.0"
 description = "A local screenshot inventory and search learning project"
 requires-python = ">=3.11,<3.14"
-dependencies = ["pytesseract>=0.3.10", "scikit-learn>=1.6", "fastembed>=0.9,<1.0"]
+dependencies = ["pytesseract>=0.3.10", "scikit-learn>=1.6", "fastembed>=0.9,<1.0", "PySide6>=6.8.1,<7"]
+
+[project.optional-dependencies]
+packaging = ["pyinstaller>=6.11,<7"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -11,3 +11,8 @@ dist/
 /screenshots/
 /data/
 *.sqlite3
+/assets/references/
+
+# Generated synthetic evaluation images and local result artifacts
+/evaluation/generated/
+/evaluation/results/

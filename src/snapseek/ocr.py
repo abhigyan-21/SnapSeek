@@ -3,6 +3,8 @@
 import os
 from importlib import import_module
 from pathlib import Path
+import shutil
+import sys
 
 from snapseek.scanner import ImageMetadata
 
@@ -21,6 +23,29 @@ class TesseractExecutableError(OCRError):
 
 class ImageOCRError(OCRError):
     """Raised when OCR fails while processing a particular image."""
+
+
+def _discover_tesseract(pytesseract) -> None:
+    """Keep custom Tesseract configuration or find the standard executable.
+
+    pytesseract defaults to the command ``tesseract``, which it resolves via
+    PATH. On Windows, desktop launches may not inherit a shell's temporary
+    PATH changes, so use the standard installer location as a fallback.
+    """
+    pytesseract_module = pytesseract.pytesseract
+    configured_command = pytesseract_module.tesseract_cmd
+    if configured_command != "tesseract":
+        # A non-default value is user configuration; leave it untouched.
+        return
+
+    if shutil.which(configured_command):
+        # Keep pytesseract's normal PATH-based behavior.
+        return
+
+    if sys.platform == "win32":
+        standard_install = Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
+        if standard_install.is_file():
+            pytesseract_module.tesseract_cmd = str(standard_install)
 
 
 def _is_tesseract_launch_error(error: OSError, image_path: Path) -> bool:
@@ -48,6 +73,8 @@ def extract_text(image: ImageMetadata) -> str:
             "The pytesseract package is unavailable. Install SnapSeek's Python "
             "dependencies with `pip install -e .`."
         ) from error
+
+    _discover_tesseract(pytesseract)
 
     try:
         return pytesseract.image_to_string(str(image.path))
