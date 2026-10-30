@@ -29,6 +29,9 @@ $env:PYTHONPATH = "src"
 .\.venv\Scripts\python.exe app.py
 ```
 
+SnapSeek uses a Windows single-instance guard. Launching it again restores and
+activates the existing window instead of opening a second copy.
+
 Or use the CLI with a local screenshot directory:
 
 ```powershell

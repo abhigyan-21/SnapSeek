@@ -38,6 +38,10 @@ from snapseek.desktop import (
     _set_windows_app_user_model_id,
     _enable_windows_resize_frame,
     _activate_windows_window,
+    _acquire_single_instance,
+    ERROR_ALREADY_EXISTS,
+    SINGLE_INSTANCE_MUTEX_NAME,
+    SW_RESTORE,
     WS_THICKFRAME,
     load_application_icon,
     main as desktop_main,
@@ -254,6 +258,35 @@ class DesktopTests(unittest.TestCase):
         ) as foreground:
             self.assertTrue(_activate_windows_window(123))
         foreground.assert_called_once()
+
+    def test_second_launch_restores_existing_window_and_exits(self) -> None:
+        calls = []
+
+        def create_mutex(_security, _initial_owner, name):
+            calls.append(("mutex", name))
+            ctypes.set_last_error(ERROR_ALREADY_EXISTS)
+            return 321
+
+        find_window = Mock(return_value=654)
+        show_window = Mock()
+        foreground = Mock()
+        close_handle = Mock()
+        with patch("snapseek.desktop.sys.platform", "win32"):
+            self.assertFalse(
+                _acquire_single_instance(
+                    create_mutex=create_mutex,
+                    find_window=find_window,
+                    show_window=show_window,
+                    foreground_window=foreground,
+                    close_handle=close_handle,
+                    get_last_error=lambda: ERROR_ALREADY_EXISTS,
+                )
+            )
+        self.assertEqual(calls, [("mutex", SINGLE_INSTANCE_MUTEX_NAME)])
+        find_window.assert_called_once_with(None, "SnapSeek")
+        show_window.assert_called_once_with(654, SW_RESTORE)
+        foreground.assert_called_once_with(654)
+        close_handle.assert_called_once_with(321)
 
     def test_translucent_window_keeps_nonzero_client_background(self) -> None:
         self.window._backdrop_enabled = True

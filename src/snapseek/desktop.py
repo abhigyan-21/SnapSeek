@@ -169,6 +169,51 @@ def resolve_asset_path(relative_path: str) -> Path:
 
 
 WINDOWS_APP_USER_MODEL_ID = "SnapSeek.Desktop"
+SINGLE_INSTANCE_MUTEX_NAME = "Local\\SnapSeek.Desktop.SingleInstance"
+ERROR_ALREADY_EXISTS = 183
+SW_RESTORE = 9
+_single_instance_handle = None
+
+
+def _acquire_single_instance(
+    create_mutex=None,
+    find_window=None,
+    show_window=None,
+    foreground_window=None,
+    close_handle=None,
+    get_last_error=None,
+) -> bool:
+    """Keep one Windows process and restore its existing window on relaunch."""
+    global _single_instance_handle
+    if sys.platform != "win32":
+        return True
+    try:
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        create_mutex = create_mutex or kernel32.CreateMutexW
+        find_window = find_window or user32.FindWindowW
+        show_window = show_window or user32.ShowWindow
+        foreground_window = foreground_window or user32.SetForegroundWindow
+        close_handle = close_handle or kernel32.CloseHandle
+        get_last_error = get_last_error or kernel32.GetLastError
+        create_mutex.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
+        create_mutex.restype = ctypes.c_void_p
+        handle = create_mutex(None, True, SINGLE_INSTANCE_MUTEX_NAME)
+        if not handle:
+            LOGGER.warning("Could not create the single-instance mutex.")
+            return True
+        if get_last_error() == ERROR_ALREADY_EXISTS:
+            window_handle = find_window(None, "SnapSeek")
+            if window_handle:
+                show_window(window_handle, SW_RESTORE)
+                foreground_window(window_handle)
+            close_handle(handle)
+            return False
+        _single_instance_handle = handle
+        return True
+    except (AttributeError, OSError, TypeError, ValueError):
+        LOGGER.warning("Single-instance protection is unavailable.", exc_info=True)
+        return True
 
 
 def _set_windows_app_user_model_id(setter=None) -> bool:
@@ -2002,6 +2047,8 @@ def _load_application_font(application: QApplication) -> None:
 def main(argv: list[str] | None = None) -> int:
     """Start the native desktop application without loading the model eagerly."""
     _set_windows_app_user_model_id()
+    if not _acquire_single_instance():
+        return 0
     application = QApplication(argv if argv is not None else sys.argv)
     application.setApplicationName("SnapSeek")
     application.setWindowIcon(load_application_icon())
