@@ -26,12 +26,38 @@ def load_state() -> dict[str, Any]:
     try:
         payload = json.loads(state_path().read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {"version": STATE_VERSION, "folders": {}}
+        return {"version": STATE_VERSION, "folders": {}, "category": "all"}
     if not isinstance(payload, dict) or payload.get("version") != STATE_VERSION:
-        return {"version": STATE_VERSION, "folders": {}}
+        return {"version": STATE_VERSION, "folders": {}, "category": "all"}
     if not isinstance(payload.get("folders"), dict):
-        return {"version": STATE_VERSION, "folders": {}}
+        return {"version": STATE_VERSION, "folders": {}, "category": "all"}
     return payload
+
+
+def saved_category() -> str:
+    """Return the last valid unified-search category."""
+    category = load_state().get("category")
+    return (
+        category
+        if category in {"screenshots", "files", "documents", "apps", "all"}
+        else "all"
+    )
+
+
+def save_category(category: str) -> None:
+    """Persist the category toggle without affecting scan caches."""
+    if category not in {"screenshots", "files", "documents", "apps", "all"}:
+        return
+    current = load_state()
+    current["category"] = category
+    target = state_path()
+    temporary = target.with_suffix(".tmp")
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary.write_text(json.dumps(current, ensure_ascii=False), encoding="utf-8")
+        temporary.replace(target)
+    except OSError:
+        return
 
 
 def save_state(

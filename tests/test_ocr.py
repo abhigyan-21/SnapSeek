@@ -11,6 +11,7 @@ from snapseek.ocr import (
     OCRDependencyError,
     TesseractExecutableError,
     extract_text,
+    extract_text_from_image,
 )
 from snapseek.scanner import ImageMetadata
 
@@ -184,6 +185,27 @@ class ExtractTextTests(unittest.TestCase):
                 extract_text(self.image)
 
         self.assertEqual(self.path.read_bytes(), self.image_bytes)
+
+    def test_pdf_ocr_accepts_in_memory_image_and_timeout(self) -> None:
+        image_to_string = Mock(return_value="PDF text")
+        pytesseract = self._mock_pytesseract(image_to_string)
+        image = object()
+
+        with patch("snapseek.ocr.import_module", return_value=pytesseract):
+            self.assertEqual(
+                extract_text_from_image(image, timeout=30),
+                "PDF text",
+            )
+
+        image_to_string.assert_called_once_with(image, timeout=30)
+
+    def test_pdf_ocr_timeout_is_an_image_ocr_error(self) -> None:
+        image_to_string = Mock(side_effect=RuntimeError("Tesseract process timeout"))
+        pytesseract = self._mock_pytesseract(image_to_string)
+
+        with patch("snapseek.ocr.import_module", return_value=pytesseract):
+            with self.assertRaisesRegex(ImageOCRError, "timed out"):
+                extract_text_from_image(object(), timeout=30)
 
 
 if __name__ == "__main__":

@@ -25,27 +25,32 @@ from snapseek.desktop import (
     HomePage,
     MainWindow,
     StatsPage,
-    WINDOWS_APP_USER_MODEL_ID,
-    _NativeMessage,
-    _AccentPolicy,
-    _WindowCompositionAttributeData,
-    MA_ACTIVATE,
-    WM_MOUSEACTIVATE,
-    _enable_windows_acrylic_blur,
-    _enable_windows_rounded_corners,
-    _resize_hit_test,
-    _windows_resize_hit_test,
-    _set_windows_app_user_model_id,
-    _enable_windows_resize_frame,
-    _activate_windows_window,
-    _acquire_single_instance,
+    load_application_icon,
+    main as desktop_main,
+    resolve_asset_path,
+)
+from snapseek.platform import windows_window
+from snapseek.platform.windows_window import (
     ERROR_ALREADY_EXISTS,
     SINGLE_INSTANCE_MUTEX_NAME,
     SW_RESTORE,
     WS_THICKFRAME,
-    load_application_icon,
-    main as desktop_main,
-    resolve_asset_path,
+    WINDOWS_APP_USER_MODEL_ID,
+    _AccentPolicy,
+    _NativeMessage,
+    _WindowCompositionAttributeData,
+    MA_ACTIVATE,
+    WM_MOUSEACTIVATE,
+    activate_window,
+    acquire_single_instance,
+    enable_acrylic_blur,
+    enable_rounded_corners,
+    enable_resize_frame,
+    resize_hit_test,
+    set_app_user_model_id,
+    windows_resize_hit_test,
+    windows_supports_acrylic_blur,
+    windows_transparency_effects_enabled,
 )
 from snapseek.ocr import ImageOCRError, OCRDependencyError
 from snapseek.scanner import ImageMetadata
@@ -129,12 +134,12 @@ class DesktopTests(unittest.TestCase):
             )
             return True
 
-        with patch("snapseek.desktop._windows_supports_acrylic_blur", return_value=True), patch(
-            "snapseek.desktop._windows_transparency_effects_enabled", return_value=True
-        ), patch(
-            "snapseek.desktop.sys.platform", "win32"
+        with patch.object(windows_window, "windows_supports_acrylic_blur", return_value=True), patch.object(
+            windows_window, "windows_transparency_effects_enabled", return_value=True
+        ), patch.object(
+            windows_window.sys, "platform", "win32"
         ):
-            self.assertTrue(_enable_windows_acrylic_blur(123, setter))
+            self.assertTrue(windows_window.enable_acrylic_blur(123, setter))
         self.assertEqual(captured["hwnd"], 123)
         self.assertEqual(captured["attribute"], 19)
         self.assertEqual(captured["state"], 4)
@@ -142,23 +147,23 @@ class DesktopTests(unittest.TestCase):
         self.assertAlmostEqual((captured["tint"] >> 24) / 255, 0.19, places=2)
 
         rejected = Mock(return_value=False)
-        with patch("snapseek.desktop._windows_supports_acrylic_blur", return_value=True), patch(
-            "snapseek.desktop._windows_transparency_effects_enabled", return_value=True
-        ), patch(
-            "snapseek.desktop.sys.platform", "win32"
+        with patch.object(windows_window, "windows_supports_acrylic_blur", return_value=True), patch.object(
+            windows_window, "windows_transparency_effects_enabled", return_value=True
+        ), patch.object(
+            windows_window.sys, "platform", "win32"
         ):
-            self.assertFalse(_enable_windows_acrylic_blur(123, rejected))
+            self.assertFalse(windows_window.enable_acrylic_blur(123, rejected))
         rejected.assert_called_once()
 
         rejected.reset_mock()
-        with patch("snapseek.desktop._windows_supports_acrylic_blur", return_value=False):
-            self.assertFalse(_enable_windows_acrylic_blur(123, rejected))
+        with patch.object(windows_window, "windows_supports_acrylic_blur", return_value=False):
+            self.assertFalse(windows_window.enable_acrylic_blur(123, rejected))
         rejected.assert_not_called()
 
-        with patch("snapseek.desktop._windows_supports_acrylic_blur", return_value=True), patch(
-            "snapseek.desktop._windows_transparency_effects_enabled", return_value=False
-        ), patch("snapseek.desktop.sys.platform", "win32"):
-            self.assertFalse(_enable_windows_acrylic_blur(123, rejected))
+        with patch.object(windows_window, "windows_supports_acrylic_blur", return_value=True), patch.object(
+            windows_window, "windows_transparency_effects_enabled", return_value=False
+        ), patch.object(windows_window.sys, "platform", "win32"):
+            self.assertFalse(windows_window.enable_acrylic_blur(123, rejected))
         rejected.assert_not_called()
 
     def test_opaque_fallback_keeps_translucent_top_level_disabled(self) -> None:
@@ -187,8 +192,8 @@ class DesktopTests(unittest.TestCase):
 
     def test_rounded_corners_use_a_separate_defensive_dwm_attribute(self) -> None:
         setter = Mock(return_value=0)
-        with patch("snapseek.desktop.sys.platform", "win32"):
-            self.assertTrue(_enable_windows_rounded_corners(321, setter))
+        with patch.object(windows_window.sys, "platform", "win32"):
+            self.assertTrue(windows_window.enable_rounded_corners(321, setter))
         self.assertEqual(setter.call_args.args[0], 321)
         self.assertEqual(setter.call_args.args[1], 33)
         self.assertEqual(setter.call_args.args[3], 4)
@@ -196,13 +201,13 @@ class DesktopTests(unittest.TestCase):
     def test_frameless_resize_hit_testing_handles_edges_corners_and_interior(self) -> None:
         rectangle = (100, 100, 900, 700)
         self.assertEqual(
-            _resize_hit_test(rectangle, 102, 102, 8),
+            windows_window.resize_hit_test(rectangle, 102, 102, 8),
             Qt.Edge.TopEdge | Qt.Edge.LeftEdge,
         )
-        self.assertEqual(_resize_hit_test(rectangle, 899, 400, 8), Qt.Edge.RightEdge)
-        self.assertEqual(_resize_hit_test(rectangle, 500, 699, 8), Qt.Edge.BottomEdge)
-        self.assertIsNone(_resize_hit_test(rectangle, 500, 400, 8))
-        self.assertIsNone(_resize_hit_test(rectangle, 99, 100, 8))
+        self.assertEqual(windows_window.resize_hit_test(rectangle, 899, 400, 8), Qt.Edge.RightEdge)
+        self.assertEqual(windows_window.resize_hit_test(rectangle, 500, 699, 8), Qt.Edge.BottomEdge)
+        self.assertIsNone(windows_window.resize_hit_test(rectangle, 500, 400, 8))
+        self.assertIsNone(windows_window.resize_hit_test(rectangle, 99, 100, 8))
 
     def test_windows_resize_hit_testing_maps_all_edges_and_corners(self) -> None:
         rectangle = (100, 100, 900, 700)
@@ -219,16 +224,16 @@ class DesktopTests(unittest.TestCase):
         for (x, y), expected in cases:
             with self.subTest(x=x, y=y):
                 self.assertEqual(
-                    _windows_resize_hit_test(rectangle, x, y, 8), expected
+                    windows_window.windows_resize_hit_test(rectangle, x, y, 8), expected
                 )
-        self.assertIsNone(_windows_resize_hit_test(rectangle, 500, 400, 8))
-        self.assertIsNone(_windows_resize_hit_test(rectangle, 900, 400, 8))
+        self.assertIsNone(windows_window.windows_resize_hit_test(rectangle, 500, 400, 8))
+        self.assertIsNone(windows_window.windows_resize_hit_test(rectangle, 900, 400, 8))
 
     def test_windows_mouse_activate_activates_clicks_without_changing_window_z_order(self) -> None:
         message = _NativeMessage()
         message.message = WM_MOUSEACTIVATE
 
-        with patch("snapseek.desktop.sys.platform", "win32"):
+        with patch.object(windows_window.sys, "platform", "win32"):
             handled, result = self.window.nativeEvent(
                 b"windows_generic_MSG", ctypes.addressof(message)
             )
@@ -241,7 +246,7 @@ class DesktopTests(unittest.TestCase):
         button = self.window.nav_buttons["Settings"]
         event = QEvent(QEvent.Type.MouseButtonPress)
 
-        with patch("snapseek.desktop.sys.platform", "win32"), patch.object(
+        with patch.object(windows_window.sys, "platform", "win32"), patch.object(
             self.window, "isActiveWindow", return_value=False
         ), patch.object(self.window, "raise_") as raise_window, patch.object(
             self.window, "activateWindow"
@@ -252,11 +257,11 @@ class DesktopTests(unittest.TestCase):
         activate_window.assert_called_once_with()
 
     def test_windows_activation_requests_foreground_for_layered_window(self) -> None:
-        with patch("snapseek.desktop.sys.platform", "win32"), patch(
-            "snapseek.desktop.ctypes.windll.user32.SetForegroundWindow",
+        with patch.object(windows_window.sys, "platform", "win32"), patch(
+            "snapseek.platform.windows_window.ctypes.windll.user32.SetForegroundWindow",
             return_value=1,
         ) as foreground:
-            self.assertTrue(_activate_windows_window(123))
+            self.assertTrue(activate_window(123))
         foreground.assert_called_once()
 
     def test_second_launch_restores_existing_window_and_exits(self) -> None:
@@ -271,9 +276,9 @@ class DesktopTests(unittest.TestCase):
         show_window = Mock()
         foreground = Mock()
         close_handle = Mock()
-        with patch("snapseek.desktop.sys.platform", "win32"):
+        with patch.object(windows_window.sys, "platform", "win32"):
             self.assertFalse(
-                _acquire_single_instance(
+                acquire_single_instance(
                     create_mutex=create_mutex,
                     find_window=find_window,
                     show_window=show_window,
@@ -312,7 +317,7 @@ class DesktopTests(unittest.TestCase):
         button = self.window.nav_buttons["Settings"]
         event = QEvent(QEvent.Type.MouseButtonPress)
 
-        with patch("snapseek.desktop.sys.platform", "win32"), patch.object(
+        with patch.object(windows_window.sys, "platform", "win32"), patch.object(
             self.window, "isActiveWindow", return_value=True
         ), patch.object(self.window, "raise_") as raise_window, patch.object(
             self.window, "activateWindow"
@@ -325,7 +330,7 @@ class DesktopTests(unittest.TestCase):
     def test_activation_filter_uses_widget_ancestry_without_window_method(self) -> None:
         event = QEvent(QEvent.Type.MouseButtonPress)
         button = self.window.nav_buttons["Settings"]
-        with patch("snapseek.desktop.sys.platform", "win32"), patch.object(
+        with patch.object(windows_window.sys, "platform", "win32"), patch.object(
             self.window, "isActiveWindow", return_value=False
         ), patch.object(self.window, "raise_") as raise_window, patch.object(
             self.window, "activateWindow"
@@ -354,9 +359,9 @@ class DesktopTests(unittest.TestCase):
             refreshes.append(hwnd.value)
             return True
 
-        with patch("snapseek.desktop.sys.platform", "win32"):
+        with patch.object(windows_window.sys, "platform", "win32"):
             self.assertTrue(
-                _enable_windows_resize_frame(
+                enable_resize_frame(
                     456, get_style, set_style, refresh_frame
                 )
             )
@@ -368,9 +373,9 @@ class DesktopTests(unittest.TestCase):
         changes = []
         refresh_results = iter((False, True))
 
-        with patch("snapseek.desktop.sys.platform", "win32"):
+        with patch.object(windows_window.sys, "platform", "win32"):
             self.assertFalse(
-                _enable_windows_resize_frame(
+                enable_resize_frame(
                     456,
                     lambda _hwnd, _index: original_style,
                     lambda _hwnd, _index, style: changes.append(style) or original_style,
@@ -540,6 +545,36 @@ class DesktopTests(unittest.TestCase):
         self.assertGreater(self.window.home_page.landing_input.parentWidget().height(), 0)
         self.assertTrue(self.window._restored_scan)
 
+    def test_restored_layout_is_consumed_before_minimize_and_restore(self) -> None:
+        image_path = self.directory / "restored.png"
+        image_path.write_bytes(b"image")
+        image = ImageMetadata("restored.png", image_path, ".png", image_path.stat().st_size)
+        snapshot = ScanSnapshot(
+            self.directory,
+            (image,),
+            (OCRTextRecord(image, "restored text"),),
+            (),
+        )
+        with patch("snapseek.desktop.scan_images", return_value=(image,)), \
+             patch("snapseek.desktop.cached_ocr", return_value={image_path: "restored text"}):
+            self.window._restore_cached_scan(str(self.directory))
+        self.window._enforce_restored_home_layout()
+        self.assertFalse(self.window._restored_layout_pending)
+        home = self.window.home_page
+        home.set_query("restored query")
+        home._set_category("apps")
+        home.show_compact_search(reduce_motion=True)
+        home.show_results([])
+        self.window.show()
+        self.application.processEvents()
+        self.window.hide()
+        self.application.processEvents()
+        self.window.show()
+        self.application.processEvents()
+        self.assertFalse(home.compact.isHidden())
+        self.assertEqual(home.compact_input.text(), "restored query")
+        self.assertEqual(home.category, "apps")
+
     def test_reduce_motion_setting_skips_animation_and_updates_live_preference(self) -> None:
         checkbox = self.window.settings_page.reduce_motion
         self.assertIn("session only", self.window.settings_page.motion_description.text())
@@ -589,13 +624,13 @@ class DesktopTests(unittest.TestCase):
 
     def test_windows_app_user_model_id_is_set_only_on_windows(self) -> None:
         setter = Mock(return_value=0)
-        with patch("snapseek.desktop.sys.platform", "win32"):
-            self.assertTrue(_set_windows_app_user_model_id(setter))
+        with patch.object(windows_window.sys, "platform", "win32"):
+            self.assertTrue(set_app_user_model_id(setter))
         setter.assert_called_once_with(WINDOWS_APP_USER_MODEL_ID)
 
         setter.reset_mock()
-        with patch("snapseek.desktop.sys.platform", "linux"):
-            self.assertFalse(_set_windows_app_user_model_id(setter))
+        with patch.object(windows_window.sys, "platform", "linux"):
+            self.assertFalse(set_app_user_model_id(setter))
         setter.assert_not_called()
 
     def test_main_sets_identity_before_qapplication_and_assigns_app_icon(self) -> None:
@@ -609,7 +644,7 @@ class DesktopTests(unittest.TestCase):
             return application
 
         with patch(
-            "snapseek.desktop._set_windows_app_user_model_id",
+            "snapseek.platform.windows_window.set_app_user_model_id",
             side_effect=lambda: events.append("app-id"),
         ), patch("snapseek.desktop.QApplication", side_effect=make_application), patch(
             "snapseek.desktop.MainWindow", return_value=window
@@ -816,6 +851,375 @@ class DesktopTests(unittest.TestCase):
         self.wait_until(lambda: self.window._active_worker is None)
         self.assertTrue(task_thread)
         self.assertNotEqual(task_thread[0], gui_thread)
+
+
+class DesktopShutdownTests(unittest.TestCase):
+    """Deterministic tests for the deferred-shutdown sequence.
+
+    These tests verify:
+    - _start_worker rejects new operations while _closing is True
+    - close() with no active worker finalizes immediately
+    - close() with a fast worker waits and finalizes (waitForDone returns True)
+    - close() with a slow worker defers via event.ignore() and retries via
+      _worker_completed once the worker finishes
+    - the database is never closed while a worker is still running
+    - the hotkey is unregistered only on the final accepted close
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.application = QApplication.instance() or QApplication([])
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.directory = Path(self.temporary.name)
+        self.window = MainWindow()
+
+    def tearDown(self) -> None:
+        # Force final close in case a test left the window deferred-open.
+        if self.window.isVisible() or not self.window._index._closed:
+            self.window._closing = True
+            self.window._worker_controller.cancel()
+            from PySide6.QtCore import QThreadPool
+            QThreadPool.globalInstance().waitForDone(3000)
+            if not self.window._index._closed:
+                self.window._index.close()
+        self.window.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        self.temporary.cleanup()
+
+    # ------------------------------------------------------------------
+    # _start_worker centralized guard
+    # ------------------------------------------------------------------
+
+    def test_start_worker_rejects_all_operations_while_closing(self) -> None:
+        """_start_worker must return False immediately when _closing is True."""
+        self.assertFalse(self.window._closing)
+        self.window._closing = True
+        result = self.window._start_worker("scan", lambda _cancel: None)
+        self.assertFalse(result)
+        self.assertIsNone(self.window._active_worker)
+
+    def test_scan_directory_and_submit_search_respect_closing_guard(self) -> None:
+        """scan_directory and submit_search delegate to _start_worker and are
+        therefore also blocked when _closing is True."""
+        self.window._closing = True
+        # Neither should start a worker; no active worker means the guard fired.
+        self.window.scan_directory(str(self.directory))
+        self.assertIsNone(self.window._active_worker)
+
+        # Provide a snapshot so submit_search won't reject for a missing scan.
+        self.window._snapshot = ScanSnapshot(self.directory, (), (), ())
+        self.window.submit_search("query", "screenshots")
+        self.assertIsNone(self.window._active_worker)
+
+    # ------------------------------------------------------------------
+    # Immediate close — no worker running
+    # ------------------------------------------------------------------
+
+    def test_close_with_no_active_worker_finalizes_immediately(self) -> None:
+        """When no worker is running, close() must set _closing, close the
+        index, and accept the event without deferral."""
+        self.assertFalse(self.window._index._closed)
+        self.window.close()
+        self.application.processEvents()
+        self.assertTrue(self.window._closing)
+        self.assertFalse(self.window.isVisible())
+        self.assertTrue(self.window._index._closed)
+
+    # ------------------------------------------------------------------
+    # Fast worker — finishes within 2 s wait
+    # ------------------------------------------------------------------
+
+    def test_close_waits_for_fast_worker_and_then_finalizes(self) -> None:
+        """When a worker completes within the 2-second waitForDone window,
+        close() must accept the event and close the database."""
+        finished = threading.Event()
+
+        def fast_task(cancel_event: threading.Event) -> object:
+            finished.wait(2)  # released almost immediately below
+            return None
+
+        self.window._start_worker("fast", fast_task)
+        self.assertIsNotNone(self.window._active_worker)
+
+        # Unblock the worker so it finishes before waitForDone times out.
+        finished.set()
+
+        self.window.close()
+        self.application.processEvents()
+
+        self.assertTrue(self.window._closing)
+        self.assertFalse(self.window.isVisible())
+        self.assertTrue(self.window._index._closed)
+
+    # ------------------------------------------------------------------
+    # Slow worker — does not finish within 2 s, then completes later
+    # ------------------------------------------------------------------
+
+    def test_close_defers_when_worker_exceeds_timeout_and_retries_on_completion(
+        self,
+    ) -> None:
+        """When waitForDone(2000) returns False, closeEvent must call
+        event.ignore() and leave the database open.
+        When the worker later finishes, _worker_completed must call close()
+        again, which then finalizes shutdown."""
+        hold = threading.Event()   # keeps the worker alive past the 2-second wait
+
+        def slow_task(cancel_event: threading.Event) -> object:
+            hold.wait(10)  # held until the test explicitly releases it
+            return None
+
+        self.window._start_worker("slow", slow_task)
+        self.assertIsNotNone(self.window._active_worker)
+
+        # Patch waitForDone to return False immediately (simulates timeout
+        # without actually waiting 2 real seconds in CI).
+        with patch(
+            "snapseek.desktop.QThreadPool.globalInstance",
+            return_value=type(
+                "FakePool", (), {"waitForDone": staticmethod(lambda _ms: False)}
+            )(),
+        ):
+            self.window.close()
+            self.application.processEvents()
+
+        # After the simulated timeout the database must still be open.
+        self.assertTrue(self.window._closing)
+        self.assertFalse(self.window._index._closed, "database must stay open while worker is running")
+
+        # Now let the worker finish.  It will emit its completed signal, which
+        # routes to _worker_completed on the GUI thread, which calls close()
+        # again — this time with no active worker, so it takes the finalization path.
+        hold.set()
+
+        # Drive the Qt event loop until the database is closed.
+        loop = QEventLoop()
+        deadline = QTimer()
+        deadline.setSingleShot(True)
+        deadline.timeout.connect(loop.quit)
+        deadline.start(3000)
+
+        def check():
+            if self.window._index._closed:
+                loop.quit()
+            else:
+                QTimer.singleShot(20, check)
+
+        QTimer.singleShot(0, check)
+        loop.exec()
+        deadline.stop()
+
+        self.assertTrue(self.window._index._closed, "database should be closed after deferred shutdown")
+
+    # ------------------------------------------------------------------
+    # Database safety during deferred close
+    # ------------------------------------------------------------------
+
+    def test_database_stays_open_while_worker_is_running_after_close_request(
+        self,
+    ) -> None:
+        """The index must remain open while a worker is executing, even after
+        close() has been called."""
+        hold = threading.Event()
+
+        def blocking_task(cancel_event: threading.Event) -> object:
+            hold.wait(10)
+            return None
+
+        self.window._start_worker("blocking", blocking_task)
+        self.assertIsNotNone(self.window._active_worker)
+
+        # Simulate the timeout path — window defers close.
+        with patch(
+            "snapseek.desktop.QThreadPool.globalInstance",
+            return_value=type(
+                "FakePool", (), {"waitForDone": staticmethod(lambda _ms: False)}
+            )(),
+        ):
+            self.window.close()
+            self.application.processEvents()
+
+        # The database must still be accessible (not closed).
+        self.assertFalse(self.window._index._closed)
+        self.assertIsNotNone(self.window._index.connection)
+
+        # Clean up: release the worker so tearDown can close cleanly.
+        hold.set()
+
+    # ------------------------------------------------------------------
+    # Hotkey cleanup happens only on the final accepted close
+    # ------------------------------------------------------------------
+
+    def test_hotkey_is_not_unregistered_on_deferred_close(self) -> None:
+        """unregister_global_hotkey must only be called when the event is
+        accepted, not when it is ignored due to a slow worker."""
+        hold = threading.Event()
+
+        def slow_task(cancel_event: threading.Event) -> object:
+            hold.wait(10)
+            return None
+
+        self.window._start_worker("slow-hotkey", slow_task)
+
+        unregister_calls: list[int] = []
+
+        with patch(
+            "snapseek.desktop.QThreadPool.globalInstance",
+            return_value=type(
+                "FakePool", (), {"waitForDone": staticmethod(lambda _ms: False)}
+            )(),
+        ), patch("snapseek.desktop.sys.platform", "win32"), patch(
+            "snapseek.desktop.unregister_global_hotkey",
+            side_effect=unregister_calls.append,
+        ):
+            self.window.close()
+            self.application.processEvents()
+
+        # Hotkey must NOT have been unregistered yet — the event was ignored.
+        self.assertEqual(unregister_calls, [], "hotkey must not be unregistered on deferred close")
+        # Database must also still be open.
+        self.assertFalse(self.window._index._closed, "database must stay open during deferred close")
+
+        # Clean up.
+        hold.set()
+
+
+class WatchWorkerPreemptionTests(unittest.TestCase):
+    """Regression tests for the race between monitor watch workers and
+    user-initiated scan/search operations.
+
+    Root cause: after a scan completes, FolderMonitor.start() is deferred
+    via QTimer.singleShot(0).  The poll timer begins ticking and may deliver
+    filesystem events before the user calls submit_search.  These events
+    launch a "watch" background worker.  Without the cancel_watch() fix,
+    submit_search() would see active_worker != None and silently drop the
+    search request, causing wait_until to time out.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.application = QApplication.instance() or QApplication([])
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.directory = Path(self.temporary.name)
+        self.window = MainWindow()
+
+    def tearDown(self) -> None:
+        self.window.close()
+        self.window.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        self.application.processEvents()
+        self.temporary.cleanup()
+
+    def test_submit_search_preempts_active_watch_worker(self) -> None:
+        """submit_search must cancel an active watch worker and start the
+        search rather than silently dropping the user request."""
+        hold = threading.Event()
+
+        def slow_watch(cancel: threading.Event) -> object:
+            hold.wait(10)  # held open to simulate a long-running watch task
+            return None
+
+        # Inject a watch worker directly — simulates what the monitor does.
+        self.assertTrue(self.window._start_worker("watch", slow_watch))
+        self.assertIsNotNone(self.window._active_worker)
+        self.assertEqual(self.window._active_worker.kind, "watch")
+
+        # Give the window a valid snapshot so submit_search doesn't reject
+        # the request for a missing scan.
+        from snapseek.desktop_workflow import ScanSnapshot
+        self.window._snapshot = ScanSnapshot(
+            directory=self.directory,
+            images=(),
+            records=(),
+            image_failures=(),
+        )
+
+        with patch("snapseek.desktop.search_snapshot", return_value=[]), \
+             patch("snapseek.desktop.search_index", return_value=[]):
+            self.window.submit_search("query", "screenshots")
+
+        # The search worker should now be active (not the watch worker).
+        self.assertIsNotNone(self.window._active_worker)
+        self.assertEqual(self.window._active_worker.kind, "search")
+        # Release the lingering watch task thread.
+        hold.set()
+
+    def test_scan_directory_preempts_active_watch_worker(self) -> None:
+        """scan_directory must cancel an active watch worker and start the
+        scan rather than silently dropping the user request."""
+        hold = threading.Event()
+
+        def slow_watch(cancel: threading.Event) -> object:
+            hold.wait(10)
+            return None
+
+        self.assertTrue(self.window._start_worker("watch", slow_watch))
+        self.assertIsNotNone(self.window._active_worker)
+
+        self.window.scan_directory(str(self.directory))
+
+        # A scan worker should now be active (not the original watch worker).
+        self.assertIsNotNone(self.window._active_worker)
+        self.assertEqual(self.window._active_worker.kind, "scan")
+        hold.set()
+
+    def test_submit_search_does_not_preempt_active_scan_worker(self) -> None:
+        """submit_search must NOT cancel a scan worker — only watch workers
+        are preemptible."""
+        hold = threading.Event()
+
+        def slow_scan(cancel: threading.Event) -> object:
+            hold.wait(10)
+            return None
+
+        self.assertTrue(self.window._start_worker("scan", slow_scan))
+        self.assertEqual(self.window._active_worker.kind, "scan")
+
+        self.window.submit_search("query", "screenshots")
+
+        # Scan worker must still be active.
+        self.assertIsNotNone(self.window._active_worker)
+        self.assertEqual(self.window._active_worker.kind, "scan")
+        hold.set()
+
+    def test_cancel_watch_clears_active_worker_immediately(self) -> None:
+        """WorkerController.cancel_watch must clear active_worker synchronously
+        so the next call to start() succeeds without waiting for a signal."""
+        hold = threading.Event()
+
+        def watch_task(cancel: threading.Event) -> object:
+            hold.wait(10)
+            return None
+
+        from snapseek.ui.operations import WorkerController
+        controller = WorkerController()
+        controller.start("watch", watch_task)
+        self.assertIsNotNone(controller.active_worker)
+
+        cancelled = controller.cancel_watch()
+        self.assertTrue(cancelled)
+        self.assertIsNone(controller.active_worker)  # cleared immediately
+        hold.set()
+
+    def test_cancel_watch_returns_false_for_non_watch_worker(self) -> None:
+        """cancel_watch must not cancel a scan or search worker."""
+        hold = threading.Event()
+
+        def scan_task(cancel: threading.Event) -> object:
+            hold.wait(10)
+            return None
+
+        from snapseek.ui.operations import WorkerController
+        controller = WorkerController()
+        controller.start("scan", scan_task)
+
+        cancelled = controller.cancel_watch()
+        self.assertFalse(cancelled)
+        self.assertIsNotNone(controller.active_worker)  # scan worker still running
+        hold.set()
 
 
 if __name__ == "__main__":

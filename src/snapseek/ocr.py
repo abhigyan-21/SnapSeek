@@ -58,42 +58,79 @@ def _is_tesseract_launch_error(error: OSError, image_path: Path) -> bool:
     return error_path != source_path
 
 
-def extract_text(image: ImageMetadata) -> str:
-    """Return OCR text for one image, which may be an empty string.
-
-    ``pytesseract`` is imported here rather than at module load time so code
-    can import this module even when the optional runtime dependency is absent.
-    """
+def _extract_text_with_pytesseract(
+    pytesseract,
+    image: object,
+    *,
+    source_path: Path | None,
+    timeout: int = 0,
+) -> str:
     try:
-        pytesseract = import_module("pytesseract")
-    except ModuleNotFoundError as error:
-        if error.name != "pytesseract":
-            raise
-        raise OCRDependencyError(
-            "The pytesseract package is unavailable. Install SnapSeek's Python "
-            "dependencies with `pip install -e .`."
-        ) from error
-
-    _discover_tesseract(pytesseract)
-
-    try:
-        return pytesseract.image_to_string(str(image.path))
+        if timeout:
+            return pytesseract.image_to_string(image, timeout=timeout)
+        return pytesseract.image_to_string(image)
     except pytesseract.TesseractNotFoundError as error:
         raise TesseractExecutableError(
             "The Tesseract executable was not found. Install Tesseract OCR and "
             "make `tesseract` available on PATH, or configure "
             "pytesseract.pytesseract.tesseract_cmd."
         ) from error
+    except RuntimeError as error:
+        if str(error) == "Tesseract process timeout":
+            label = source_path or Path("<rendered PDF page>")
+            raise ImageOCRError(
+                f"OCR timed out for image {label}."
+            ) from error
+        raise ImageOCRError(
+            f"OCR failed for image {source_path or '<rendered PDF page>'}: {error}"
+        ) from error
     except OSError as error:
-        if _is_tesseract_launch_error(error, image.path):
+        if source_path is not None and _is_tesseract_launch_error(error, source_path):
             raise TesseractExecutableError(
                 f"The Tesseract executable could not be launched: {error}. "
                 "Check the executable path and permissions."
             ) from error
         raise ImageOCRError(
-            f"OCR failed for image {image.path}: {error}"
+            f"OCR failed for image {source_path or '<rendered PDF page>'}: {error}"
         ) from error
     except pytesseract.TesseractError as error:
         raise ImageOCRError(
-            f"OCR failed for image {image.path}: {error}"
+            f"OCR failed for image {source_path or '<rendered PDF page>'}: {error}"
         ) from error
+
+
+def _load_pytesseract():
+    try:
+        pytesseract = import_module("pytesseract")
+    except (ModuleNotFoundError, ImportError) as error:
+        if isinstance(error, ModuleNotFoundError) and error.name != "pytesseract":
+            raise
+        raise OCRDependencyError(
+            "The pytesseract package is unavailable. Install SnapSeek's Python "
+            "dependencies with `pip install -e .`."
+        ) from error
+    _discover_tesseract(pytesseract)
+    return pytesseract
+
+
+def extract_text(image: ImageMetadata) -> str:
+    """Return OCR text for one image, which may be an empty string.
+
+    ``pytesseract`` is imported here rather than at module load time so code
+    can import this module even when the optional runtime dependency is absent.
+    """
+    return _extract_text_with_pytesseract(
+        _load_pytesseract(),
+        str(image.path),
+        source_path=image.path,
+    )
+
+
+def extract_text_from_image(image: object, *, timeout: int = 30) -> str:
+    """OCR an in-memory image, primarily for rendered PDF pages."""
+    return _extract_text_with_pytesseract(
+        _load_pytesseract(),
+        image,
+        source_path=None,
+        timeout=timeout,
+    )

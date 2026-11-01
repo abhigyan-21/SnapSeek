@@ -21,6 +21,19 @@
 - [x] Desktop result cap: render only the top 10 semantic matches to keep scrolling responsive
 - [x] Phase 8 packaging setup: PyInstaller Windows x64 onedir spec and runtime asset inclusion
 - [x] Phase 8 local build: generated and directly launched `dist\SnapSeek\SnapSeek.exe` on Windows 11 x64
+- [x] Stage 1 modularization: extracted Windows-native window integration into `src\snapseek\platform\windows_window.py`
+- [x] Stage 2 modularization: extracted workers, result cards, result grid, and preview dialog into `src\snapseek\ui\`
+- [x] Stage 3 modularization: extracted desktop scan/search orchestration and worker lifecycle coordination into `src\snapseek\ui\operations.py`
+- [x] Stage 4 modularization: extracted pages, navigation/title-bar presentation, and shared theme/style helpers into `src\snapseek\ui\`
+
+- [x] Stage 5 modularization: removed platform compatibility wrappers from `desktop.py`; `desktop.py` now imports `from snapseek.platform import windows_window` and calls platform functions directly; tests patch `snapseek.platform.windows_window.*` instead of `snapseek.desktop.*`
+
+- [x] Stage 6 shutdown hardening: deferred-close via `event.ignore()`, `waitForDone(2000)` timeout, `_start_worker` centralized closing guard, `_worker_completed` retry, and deterministic shutdown tests
+- [x] Desktop application discovery: per-user and Public Desktop `.lnk` roots use Windows Known Folder resolution with safe fallbacks; cached-scan layout restoration is one-shot so search state survives minimize/restore
+- [x] Stage 9.1: standalone local PDF extraction with page boundaries, metadata, cancellation, and explicit error/OCR-required statuses
+- [x] Stage 9.2: transactional PDF metadata/page persistence with schema migration, incremental fingerprints, monitor events, reconciliation, and transient-failure preservation
+- [x] Stage 9.3: SQLite FTS5 PDF keyword search with bounded fallback, page ranking/snippets, Documents category, and Universal Search integration
+- [x] Stage 9.4: bounded scanned-PDF rendering and local Tesseract OCR with schema v4 provenance and atomic replacement
 
 ## Current implementation
 `main.py` remains the command-line entry point: it reads `SNAPSEEK_SCREENSHOT_DIR`, accepts one query, scans supported direct-child images, runs OCR, and uses semantic ranking. `app.py` starts the separate PySide6 desktop app, where the user can choose a folder with a native picker. Both use the shared scanner, OCR, and semantic modules.
@@ -31,6 +44,7 @@ Phase 7 adds a standard-library generator for 16 deterministic synthetic PNG scr
 
 ## Known limitations
 - The package uses a `src/` layout; run from a checkout with `PYTHONPATH=src` or an editable install.
+- PDF records are persisted locally in SQLite schema version 4. Unchanged PDFs skip extraction using size and `st_mtime_ns`; forced integrity checks use streaming SHA-256. Documents search uses FTS5 or a bounded SQL fallback and returns page-level snippets. Scanned pages are rendered and OCRed locally through pypdfium2 and Tesseract; pages with meaningful selectable text are not OCRed. Password handling, semantic embeddings, and exact-page viewer navigation remain future stages.
 - The selected desktop folder, scan results, statistics, and Reduce motion preference last for the running app only. Nothing searchable or statistical is persisted across restarts. `SNAPSEEK_SCREENSHOT_DIR` is used as the initial folder when available; the CLI continues to require it.
 - FastEmbed downloads model files on first use if they are not cached. The model cache is local to the machine; semantic search cannot start offline unless the model has already been downloaded.
 - The app reuses the encoder during its process but recomputes document vectors for each submitted query. No OCR text, scan index, or vector cache persists between runs.
@@ -41,6 +55,33 @@ Phase 7 adds a standard-library generator for 16 deterministic synthetic PNG scr
 - The packaged GUI opened its Settings page, accepted a test folder path, and opened the native folder picker. A full scan was not run because no model cache was present and a model download was intentionally avoided. A fresh Windows machine/runtime smoke test and installer remain future work.
 - The user reported a successful real Tesseract OCR check on a screenshot. Real semantic search has not been run through the desktop UI during Phase 6.
 - The synthetic benchmark is intentionally small and does not establish retrieval quality on personal screenshot collections; live metrics also depend on Tesseract and model versions.
+
+Stage 1 now gives `windows_window.py` ownership of Win32 ctypes structures,
+AppUserModelID setup, single-instance activation, Acrylic/DWM composition,
+resize-frame setup, foreground activation, DPI-aware hit testing, and native
+message interpretation. `desktop.py` keeps Qt UI orchestration and a thin
+`nativeEvent()` adapter, while compatibility wrappers preserve existing imports.
+`windows_hotkey.py` remains the sole owner of global shortcut registration.
+
+Stage 2 gives `ui\workers.py` ownership of cancellable QRunnable execution and
+outcome/error signals; `ui\result_cards.py` owns screenshot and unified result
+presentation; `ui\result_grid.py` owns deferred batched rendering and responsive
+card layout; and `ui\dialogs.py` owns screenshot preview presentation.
+`desktop.py` continues to compose pages and imports these names as compatibility
+re-exports. No search, OCR, index, or platform behavior changed.
+
+Stage 3 gives `ui\operations.py` ownership of cached snapshot restoration,
+scan/search task construction, scan persistence, and active worker coordination.
+`MainWindow` applies outcomes to widgets but no longer embeds the scan/search
+closures. The audit found no safe file, dependency, asset, or obsolete-test
+deletions; referenced packaging resources, evaluation data, compatibility
+imports, and planned components were retained.
+
+Stage 4 gives `ui\pages.py` ownership of Home, Folder, Stats, and Settings
+construction; `ui\navigation.py` ownership of the title bar and window controls;
+and `ui\theme.py` ownership of shared visual helpers and stylesheet generation.
+`MainWindow` now composes these modules and retains application-level lifecycle,
+native event, navigation, and outcome coordination.
 
 ## Validation history
 - Phase 1 scanner tests use temporary directories and cover supported/unsupported extensions, case normalization, sorting, empty/missing directories, ignored subfolders, disappearing files, and listing errors.
@@ -69,4 +110,32 @@ Phase 7 adds a standard-library generator for 16 deterministic synthetic PNG scr
 
 ## Next task
 Complete final desktop QA, including a manual Windows check of Acrylic blur, native window activation, dragging/resizing, maximize/restore, and text contrast with transparency effects enabled and disabled. Headless tests do not prove the blur is visible; Microsoft's documentation recommends against `SetWindowCompositionAttribute` in favor of `DwmSetWindowAttribute`, while the specific AccentPolicy Acrylic state has no stable public contract. Clean-machine packaging validation, installers, and GitHub Releases remain later work.
+- Phase 8 unified search core implemented: versioned local SQLite indexing for selected folders, incremental metadata reuse, deletion cleanup, overlap deduplication, Start Menu shortcut discovery, category-aware file/app ranking, native opening, persisted category selection, and optional Windows global hotkey.
+- Phase 8 UI routes Screenshots, Files, Apps, and All through separate engines while preserving the existing screenshot UI, animations, CLI, OCR, semantic search, and evaluation behavior.
+- Phase 8 remaining work: continuous Windows filesystem monitoring, persistent screenshot embedding blobs, true typing debounce/cancellation, configurable shortcut UI (environment configuration exists), calibrated cross-category ranking, and manual Windows shortcut/large-library validation.
+- Stage 1 limitation: native behavior is mocked in automated tests; Acrylic rendering and global shortcut behavior still require manual validation on Windows.
+- Stage 2 validation: focused worker/UI tests and the existing desktop tests must be rerun after extraction; Qt native rendering remains outside headless coverage.
+- Stage 4 remaining debt: `MainWindow` still owns application-level lifecycle, native-window event handling, navigation state, styling application, and user-facing outcome presentation; these remain intentionally coordinated there.
+- Stage 3 validation: isolated focused regression checks passed; one combined Qt-focused run experienced a shared-thread-pool timeout, while the complete sequential suite passed 143 tests with exit code 0. `desktop.py` is now 1,608 lines. `git diff --check` passed. No files were deleted because repository-wide reference, packaging, asset, test, and planned-component checks found no safe deletion candidate.
+- Stage 4 validation: focused UI/page tests passed 54 tests with exit code 0; the complete sequential suite passed 146 tests with exit code 0; application imports and `py_compile` passed with exit code 0; `git diff --check` passed. `desktop.py` is now 679 lines. No files were deleted; all assets, tests, packaging resources, and compatibility exports remain required or intentionally retained.
 - Desktop scan optimization implemented: OCR now uses bounded parallel workers, unchanged files reuse metadata-validated cached text, and the selected folder/OCR records persist under `%LOCALAPPDATA%\SnapSeek\state.json`. The semantic model is loaded lazily on first search. Focused and full test suites pass.
+- Stage 5 validation: removed 11 compatibility wrappers and `_platform_compatibility_context()` from `desktop.py`; replaced with direct `windows_window.*` calls via `from snapseek.platform import windows_window`. Updated `test_desktop.py` to patch `snapseek.platform.windows_window.*` instead of `snapseek.desktop.*`. Full sequential suite passed 146 tests with exit code 0. `py_compile` passed. `git diff --check` passed. `desktop.py` is now 564 lines (down from 679).
+- Stage 6 shutdown hardening: `_start_worker` now returns `False` immediately when `_closing` is `True` (centralized guard). `closeEvent` cancels the active worker, calls `QThreadPool.globalInstance().waitForDone(2000)`, and accepts the event only when the return value is `True`. If `False` (timeout), `event.ignore()` keeps the window and database alive; `_worker_completed` detects `_closing=True` on the next completion and retries `self.close()`. `QThreadPool` added to the top-level `PySide6.QtCore` import. `test_close_blocks_until_indexing_worker_finishes` strengthened with an `os.walk` patch barrier. `DesktopShutdownTests` class added with 7 deterministic tests. Full suite: 160 tests passed, exit code 0. `py_compile` exit code 0. `git diff --check` exit code 0.
+- [x] Stage 7 filesystem monitoring: continuous automatic index updates via watchdog `WindowsApiObserver` (`ReadDirectoryChangesW`); 250ms debounce with `SimpleQueue`+`QTimer` GUI marshalling; targeted `LocalIndex` APIs (`index_single_file`, `index_single_directory`, `remove_item`, `remove_items_under`); `build_watch_task` for event-driven incremental indexing; `FolderMonitor` in `src/snapseek/filesystem_monitor.py`; `SettingsPage.set_monitor_status()` indicator; `stability_check=False` in `_apply_change_event`; monitor started deferred via `QTimer.singleShot(0)` after successful scan; `WorkerController.cancel_watch()` lets scan/search preempt watch workers; worker completion tokens ignore stale cancelled-worker signals and clear the active slot before publishing completion; empty screenshot searches skip unnecessary model loading; `watchdog>=6.0,<7` declared in `pyproject.toml`; `watchdog` added to `SnapSeek.spec` hidden imports. `WatchWorkerPreemptionTests` and controller lifecycle regression tests cover preemption and stale completion handling. Full suite: 239 tests passed, exit code 0, 20.061s runtime. `git diff --check` exit code 0.
+- [x] Stage 7A file-integrity protection: targeted create/modify/rename-destination indexing requires consecutive unchanged size and `st_mtime_ns` observations; disappearing or changing files are deferred without replacing valid records; transient access failures use bounded cancellation-aware retry/backoff; permanent errors are not retried; rename source records are removed only after successful destination indexing. Focused filesystem-monitor suite: 79 tests passed. Combined Stage 7A regression modules: 155 tests passed. `compileall` and `git diff --check` passed.
+- [x] Stage 7B reconciliation and observer recovery: conservative five-minute GUI reconciliation timer runs `LocalIndex.index_folder()` through `WorkerController`; reconciliation defers behind scans, searches, and watch updates; `FolderMonitor` health polling detects dead observers and missing roots while retaining the configured root; recovery uses bounded exponential backoff, reconciles before restarting an observer, and responds to application reactivation events. Focused monitor/reconciliation suite: 85 tests passed.
+- [x] Stage 7C.1 application refresh: `LocalIndex.index_applications()` now transactionally discovers current `.lnk` shortcuts, upserts additions/modifications, removes stale app records only beneath the supplied Start Menu roots, preserves other item types and out-of-scope app records, and supports cancellation. `build_application_refresh_task()` provides the cancellable operations-layer task. Full suite: 256 tests passed.
+- [x] Stage 7C.2 Start Menu monitoring: an independent multi-root `FolderMonitor` watches available per-user and machine-wide Start Menu roots, retains unavailable roots for independent recovery, debounces shortcut events, coalesces refresh requests behind user work, retries refresh failures without restarting healthy observers, and stops safely during shutdown.
+
+## Known limitations (Stage 7 additions)
+- Filesystem monitoring uses `watchdog 6.0.0` backed by `ReadDirectoryChangesW` on Windows. The observer runs as a daemon thread; SnapSeek never forcibly terminates it.
+- Monitor is started after each successful scan. If the monitored folder becomes unavailable (network share disconnect, drive ejection), `watchdog` may log an error and stop delivering events silently. The manual "Scan / Rescan" button remains the recovery mechanism.
+- Start Menu and Desktop shortcut refresh is monitored independently from the selected screenshot folder. Unavailable Start Menu roots retain their existing application records until a later successful enumeration.
+- Periodic full reconciliation (catching missed events after wake-from-sleep, etc.) is not yet implemented. Manual Scan / Rescan is the current reconciliation path.
+- Live manual validation of real-time index updates on Windows still required.
+- Stage 7A does not yet recover a stopped observer, reconcile missed events automatically, refresh application shortcuts, or handle sleep/resume and disconnected-drive recovery; these remain later Stage 7 work.
+- Stage 7B recovery is conservative: a missing root is retried while the application remains open, but application shortcut indexing is still not part of reconciliation. Native Windows suspend/resume and real disconnected-drive behavior still require manual validation.
+- Stage 7C.2 adds automatic Start Menu monitoring and scheduling, but live Windows validation remains outstanding.
+- Stage 7C.2 still requires real Windows validation for Start Menu observer behavior, root permissions, shortcut installation/removal, and shutdown during recovery.
+- Desktop shortcut support is implemented. Start Menu roots remain recursive, while Desktop roots enumerate only top-level `.lnk` files so unrelated Desktop folders are not traversed. Application monitor filtering follows the same policy for refresh scheduling. The full 269-test suite passes with this policy.
+- [x] Stage 9.1 PDF text extraction: standalone `pypdf`-based page-preserving extraction with metadata, cancellation, source integrity, and explicit empty/OCR-required/encrypted/corrupt/unsupported/inaccessible statuses. PDF indexing, search, and scanned-page OCR remain future work.

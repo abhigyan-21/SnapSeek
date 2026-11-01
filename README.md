@@ -2,6 +2,11 @@
 
 SnapSeek searches local screenshot text. It scans image files, extracts visible text with Tesseract OCR, and ranks the resulting records with local semantic embeddings. The repository also includes separate keyword and TF-IDF search functions and a synthetic retrieval evaluation.
 
+The desktop launcher also searches indexed files, folders, Windows Start Menu
+applications, and persisted PDF pages. The unified index and metadata remain local in
+`%LOCALAPPDATA%\SnapSeek\index.sqlite3`; original files and screenshots are
+never copied or modified.
+
 ## Requirements
 
 - Python 3.11, 3.12, or 3.13
@@ -31,6 +36,13 @@ $env:PYTHONPATH = "src"
 
 SnapSeek uses a Windows single-instance guard. Launching it again restores and
 activates the existing window instead of opening a second copy.
+
+The Home search field defaults to **All** and has a category toggle for
+Screenshots, Files, Documents, Apps, and All. Scan a selected folder from Settings to
+index its files incrementally. The global launcher shortcut defaults to
+`Ctrl+Alt+Space`; configure it before launch with
+`$env:SNAPSEEK_GLOBAL_HOTKEY = "Ctrl+Alt+Space"`. If another application owns
+the shortcut, SnapSeek continues without global activation.
 
 Or use the CLI with a local screenshot directory:
 
@@ -73,7 +85,27 @@ The spec includes the runtime SVG icons and PNG/ICO logo. PyInstaller's PySide6 
 
 The semantic model `sentence-transformers/all-MiniLM-L6-v2` is downloaded by FastEmbed on the first semantic search when it is not already in the local cache. Later searches use that cache. If model setup reports a download or cache error, check connectivity for the initial download or retry with a valid local cache. The desktop app does not require `SNAPSEEK_SCREENSHOT_DIR`; choose, change, and scan a folder from Settings. Desktop OCR runs use up to four concurrent Tesseract workers, and unchanged OCR results are reused on rescan and after restarting the app. Embeddings remain in memory for the current run.
 
-This is a standalone application folder, not an installer. It does not install Tesseract, create shortcuts, include an uninstaller, or publish a GitHub Release. The onedir build and direct executable startup must be verified on a clean Windows machine before distribution; Qt plugins and FastEmbed/ONNX runtime loading should be checked there as well.
+Phase 8 and later use SQLite schema version 4 with `roots`, `items`,
+`pdf_documents`, `pdf_pages`, and `pdf_pages_fts` tables. Items
+store type, path, name, extension, parent, size, modification time, optional
+launch target, OCR text, and a reserved embedding column. Indexing is
+incremental, removes deleted descendants, deduplicates canonical paths across
+overlapping roots, skips common build/cache/environment directories, and marks
+failed runs for retry. File/app ranking uses exact, prefix, substring,
+extension/path, and fuzzy name matching; it never compares those scores with
+semantic screenshot scores.
+
+Scanned PDF pages containing only whitespace or control characters are rendered
+at 150 DPI and OCRed one page at a time through local Tesseract. Pages with
+meaningful selectable text are preserved and are not OCRed, even when scanned
+imagery is also present. PDF OCR is bounded to 4096x4096 pixels, 16 million
+pixels, 30 seconds per page, and a configurable default of 200 OCR pages.
+Whole-document replacement is atomic: transient failures preserve the previous
+complete document, while new incomplete documents receive `ocr_required`
+without searchable partial pages. pypdfium2 5.14.0 and its PDFium/component
+notices are included under `licenses/pypdfium2/5.14.0`.
+
+This is a standalone application folder, not an installer. It does not install Tesseract, create shortcuts, include an uninstaller, or publish a GitHub Release. The onedir build and direct executable startup must be verified on a clean Windows machine before distribution; Qt plugins, PDFium, and FastEmbed/ONNX runtime loading should be checked there as well.
 
 ## Tests
 
@@ -88,6 +120,13 @@ $env:OMP_NUM_THREADS = "1"
 ```
 
 Desktop tests mock OCR and use fake embeddings. They do not need Tesseract or a model download.
+
+Phase 8 index tests:
+
+```powershell
+$env:PYTHONPATH = "src"
+.\.venv\Scripts\python.exe -m unittest tests.test_unified_index -v
+```
 
 ## Synthetic retrieval evaluation
 
@@ -114,3 +153,61 @@ This small synthetic benchmark is for comparing behavior on controlled text scen
 ## Privacy and repository hygiene
 
 Do not put personal screenshots, OCR dumps, or private paths in the repository. Use `evaluation/generated/` only for the script-generated synthetic PNGs; it is ignored by Git. Keep real screenshot collections outside the repository (the `/screenshots/` and `/data/` directories are ignored), and do not add evaluation output containing user data. The checked-in query labels and generator text are synthetic.
+
+## Phase 8 module map and limitations
+
+- `src/snapseek/unified_index.py` owns SQLite migration, incremental folder
+  indexing, deletion cleanup, and transactional `.lnk` shortcut discovery.
+- `src/snapseek/pdf_extractor.py` provides standalone local, page-preserving
+  PDF text extraction with metadata and explicit encrypted/corrupt/OCR-required
+  statuses. `LocalIndex` persists PDF metadata, page text, and extracted/OCR
+  provenance incrementally in SQLite schema version 4 using streaming SHA-256
+  fingerprints. Documents
+  search uses SQLite FTS5 when available and a bounded SQL fallback otherwise;
+  semantic search and password handling are not yet implemented.
+- `src/snapseek/unified_search.py` owns category filtering, local ranking, and
+  default application launching.
+- `src/snapseek/windows_hotkey.py` owns the optional Windows `RegisterHotKey`
+  integration.
+- `src/snapseek/desktop.py` owns page construction, category UI, native-window
+  adaptation, and user-facing operation outcomes.
+- `src/snapseek/ui/operations.py` owns scan/search task construction, cached
+  snapshot restoration, persistence coordination, and worker lifecycle.
+- `src/snapseek/ui/workers.py`, `result_cards.py`, `result_grid.py`, and
+  `dialogs.py` own reusable Qt worker and result-presentation components.
+- `src/snapseek/ui/pages.py` owns Home, Folder, Stats, and Settings page
+  construction and page-local signals.
+- `src/snapseek/ui/navigation.py` owns the branded title bar and window-control
+  presentation.
+- `src/snapseek/ui/theme.py` owns shared visual helpers and stylesheet generation.
+
+The index scans selected folders recursively and continuously monitors the
+selected folder for filesystem events after a successful scan. A conservative
+background reconciliation also recovers missed creates, modifications, and
+deletions; observer failures and temporarily unavailable roots are retried with
+bounded backoff and reconciled before monitoring resumes. Use Scan / Rescan as
+an immediate manual recovery path when needed. Per-user and machine-wide Start
+Menu roots plus per-user and Public Desktop roots are monitored independently.
+Start Menu roots are searched recursively for `.lnk` files; Desktop roots
+search only top-level `.lnk` files so unrelated development folders are never
+traversed. Shortcut changes refresh the application index transactionally.
+Known Folder APIs are preferred for Desktop discovery, with environment
+fallbacks. Unavailable or unsuccessfully enumerated roots retain their existing
+records, while shortcuts at different paths remain separate results.
+The initial cached-scan landing layout is one-shot, so minimizing and restoring
+after a search preserves the compact search bar, query, category, and results.
+Shortcut targets are
+delegated to Windows when launched, so invalid shortcuts fail at open time
+without crashing indexing. Native backdrop, shortcut conflict, clean-machine
+packaging, and large-library latency still require manual validation.
+PDF extraction and persistence use `pypdf` locally and never modify source
+files. PDFs are refreshed on create, modify, rename, delete, and reconciliation
+events. Page boundaries, metadata, extraction status, and a streaming content
+fingerprint are stored transactionally. Unchanged PDFs skip extraction and OCR;
+transient access or OCR failures preserve the previous valid pages. Empty
+pages are rendered by pypdfium2 and OCRed locally through Tesseract, while
+pages with meaningful selectable text are never OCRed. PDF keyword search
+returns page numbers and short safely escaped snippets, never extracts during
+search, and limits results to three pages per document. PDF semantic
+embeddings, password handling, and exact-page viewer navigation remain future
+stages.

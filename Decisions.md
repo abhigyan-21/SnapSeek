@@ -225,6 +225,201 @@
 - **Alternatives considered:** `WindowStaysOnTopHint`, repeated activation requests, and direct `SetForegroundWindow` calls.
 - **Consequences:** Active-window clicks do not issue additional activation requests. Minimize, maximize/restore, and native resize behavior remain unchanged. The packaged executable was verified with an actual mouse click while another temporary window was foreground.
 
+### D-030 — Use a versioned local SQLite index for unified search
+- **Status:** Accepted for Phase 8
+- **Context:** Repeated disk traversal on every keystroke would be slow and would not support reliable incremental updates.
+- **Decision:** Store canonical local metadata in `%LOCALAPPDATA%\SnapSeek\index.sqlite3` with schema versioning, roots, item metadata, OCR text, and a reserved embedding column.
+- **Rationale:** SQLite ships with Python, supports transactions and indexes, and avoids adding a local service or dependency.
+- **Consequences:** The index is rebuildable. Original files are never copied, and common build/cache/environment directories are excluded by default.
+
+### D-031 — Keep unified category scores separate from screenshot semantic scores
+- **Status:** Accepted for Phase 8
+- **Context:** Filename/path matching and semantic cosine similarity have different meanings and score ranges.
+- **Decision:** Rank files, folders, and applications with exact/prefix/substring/path/fuzzy matching. Keep screenshot semantic ranking in its existing engine and combine categories by explicit category grouping rather than raw score comparison.
+- **Rationale:** This avoids misleading cross-engine score comparisons while preserving existing screenshot relevance.
+- **Consequences:** The All view is category-aware; calibrated cross-category ranking remains future work.
+
+### D-032 — Use RegisterHotKey as an optional Windows launcher shortcut
+- **Status:** Accepted for Phase 8
+- **Context:** The launcher needs a global shortcut without a third-party hook dependency.
+- **Decision:** Register `Ctrl+Alt+Space` by default through Win32 `RegisterHotKey`; allow `SNAPSEEK_GLOBAL_HOTKEY` to configure the combination and continue normally if registration fails.
+- **Rationale:** The OS-managed shortcut is local, lightweight, and conflict-safe.
+- **Consequences:** Shortcut behavior is Windows-only and requires manual validation on the target machine.
+
+### D-033 — Isolate Windows-native window integration
+- **Status:** Accepted and implemented for Stage 1
+- **Context:** The desktop UI previously mixed Qt composition with ctypes declarations,
+  DWM/Acrylic setup, activation, mutex, and native hit testing.
+- **Decision:** Keep those responsibilities in
+  `src/snapseek/platform/windows_window.py`. `desktop.py` delegates native messages
+  and retains compatibility wrappers for existing private imports. Keep global
+  shortcut registration in `windows_hotkey.py`.
+- **Rationale:** This preserves behavior while making platform APIs independently
+  testable and keeping the Qt layer focused on UI orchestration.
+- **Consequences:** Platform behavior can be mocked without importing or modifying
+  unrelated search/indexing code. Compatibility wrappers remain until callers migrate.
+
+### D-034 — Isolate reusable desktop UI components
+- **Status:** Accepted and implemented for Stage 2
+- **Context:** `desktop.py` combined page orchestration with worker lifecycle,
+  result-card rendering, grid layout, and image preview presentation.
+- **Decision:** Keep workers in `src/snapseek/ui/workers.py`, result cards in
+  `src/snapseek/ui/result_cards.py`, the responsive grid in
+  `src/snapseek/ui/result_grid.py`, and the preview dialog in
+  `src/snapseek/ui/dialogs.py`. Preserve compatibility imports from `desktop.py`.
+- **Rationale:** These components have clear Qt ownership boundaries and can be
+  tested without importing the full main window.
+- **Consequences:** `desktop.py` remains the page/controller composition layer;
+  extracted components retain existing signals, cancellation, deferred deletion,
+  and error propagation behavior.
+
+### D-035 — Isolate desktop operation orchestration
+- **Status:** Accepted and implemented for Stage 3
+- **Context:** `MainWindow` still constructed scan/search closures, restored cached
+  snapshots, persisted scan results, and owned worker lifecycle state.
+- **Decision:** Keep those responsibilities in `src/snapseek/ui/operations.py`.
+  The module composes existing workflow/index/search functions through injection;
+  `MainWindow` retains UI state updates and compatibility access to the active
+  worker.
+- **Rationale:** This reduces controller coupling without changing search,
+  indexing, OCR, persistence, or cancellation semantics.
+- **Consequences:** Operation helpers can be tested without constructing the full
+  window. The remaining controller still handles user-facing outcome messages
+  and page transitions.
+
+### D-036 — Isolate desktop page and presentation construction
+- **Status:** Accepted and implemented for Stage 4
+- **Context:** `MainWindow` still contained all page widget construction, title-bar
+  controls, shared visual helpers, and the complete stylesheet.
+- **Decision:** Keep shared visual behavior in `src/snapseek/ui/theme.py`, page
+  classes in `src/snapseek/ui/pages.py`, and title-bar/navigation presentation
+  in `src/snapseek/ui/navigation.py`. `MainWindow` composes these widgets and
+  retains compatibility imports.
+- **Rationale:** These are presentation boundaries with stable Qt signal and
+  parent-child ownership contracts; extracting them does not move application
+  services or alter search/indexing behavior.
+- **Consequences:** Page and navigation construction can be tested independently.
+  Application-level navigation, lifecycle, native events, and user-facing
+  outcome handling remain in `MainWindow`.
+
+### D-037 — Remove platform compatibility wrappers from desktop.py
+- **Status:** Accepted and implemented for Stage 5
+- **Context:** `desktop.py` contained 11 compatibility wrapper functions and a
+  `_platform_compatibility_context()` monkeypatch context manager that existed
+  solely to make `test_desktop.py`'s `patch("snapseek.desktop.*")` calls work.
+  These wrappers added indirection between `MainWindow` and the platform layer
+  and forced tests to couple to `desktop.py` internals.
+- **Decision:** Remove all 11 wrappers and the context manager. `desktop.py`
+  imports `from snapseek.platform import windows_window` and calls platform
+  functions directly. Update `test_desktop.py` to patch
+  `snapseek.platform.windows_window.*` instead.
+- **Rationale:** Direct calls make the platform dependency explicit, eliminate
+  the monkeypatch hack, and decouple tests from `desktop.py` internals.
+- **Consequences:** `desktop.py` reduced from 679 to 564 lines. All 146 tests
+  pass. No changes to platform behavior, search, OCR, or indexing.
+
+### D-038 — Harden application shutdown with deferred-close and centralized worker guard
+- **Status:** Accepted and implemented for Stage 6
+- **Context:** `closeEvent` previously called `self._index.close()` and `event.accept()`
+  unconditionally. The `LocalIndex` RLock already serialized database access, but the
+  worker thread could still be executing non-database work (OCR, model inference) when
+  Qt tore down the process.
+- **Decision:** Make `_start_worker` the single centralized guard: it returns `False`
+  immediately when `_closing` is `True`, so no new operations can start once shutdown
+  begins. In `closeEvent`, after requesting cooperative cancellation, call
+  `QThreadPool.globalInstance().waitForDone(2000)` when a worker is active. If
+  `waitForDone` returns `True` the worker finished within 2 seconds and the event is
+  accepted normally. If it returns `False` (timeout), call `event.ignore()` to keep the
+  window alive and the database open, then return without finalizing. When the worker
+  eventually finishes, `_worker_completed` detects `_closing=True` and calls
+  `self.close()` for a second attempt; this time no worker is running so the finalization
+  path proceeds. The database and hotkey cleanup happen only in the accepted-close path.
+- **Rationale:** The RLock in `LocalIndex.close()` already ensured the connection was not
+  closed while `index_folder` held the lock. The new design extends that guarantee to
+  non-database work and makes it impossible to close the database or exit while any
+  worker thread is executing. `event.ignore()` is the standard Qt mechanism for deferring
+  a close request; it keeps the window alive without adding timers or polling.
+- **Alternatives considered:** Forcibly terminating the worker (rejected — damages
+  in-progress writes), a longer fixed-wait with no retry (rejected — blocks the GUI
+  thread indefinitely if the worker hangs), a `QTimer`-based polling retry
+  (rejected — adds complexity; the worker's own completion signal is a cleaner trigger).
+- **Consequences:** The close button may appear unresponsive for up to 2 seconds if a
+  long-running OCR or model-inference call is active. If it exceeds 2 seconds, the
+  window stays open until the worker finishes. No forcible termination; no data loss;
+  no database use after close. `_start_worker` is the sole shutdown gate — explicit
+  `_closing` guards in `scan_directory` and `submit_search` were not added because they
+  both delegate to `_start_worker`.
+
+### D-039 — Use watchdog with queue-based GUI marshalling for filesystem monitoring
+- **Status:** Accepted and implemented for Stage 7
+- **Context:** SnapSeek needed automatic index updates when files change in indexed folders, without polling or full rescans.
+- **Decision:** Use `watchdog>=6.0,<7` (already in `.venv`, now declared in `pyproject.toml`). On Windows, `Observer()` auto-resolves to `WindowsApiObserver` backed by `ReadDirectoryChangesW`. Events are marshalled from the watchdog daemon thread to the GUI thread via a `queue.SimpleQueue` drained by a 50ms `QTimer`; a 250ms single-shot debounce timer batches rapid events into one `changes_ready(frozenset[ChangeEvent])` signal. `FolderMonitor` lives in `src/snapseek/filesystem_monitor.py`. `_apply_change_event` in `operations.py` maps each event kind to a targeted `LocalIndex` operation (no full rescan). Four new `LocalIndex` methods handle single-item mutations: `index_single_file`, `index_single_directory`, `remove_item`, `remove_items_under`. Monitor starts after a successful scan via `QTimer.singleShot(0)` to defer observer startup out of `_worker_completed`. `scan_directory` and `submit_search` cancel any active watch worker via `WorkerController.cancel_watch()` so user operations are never silently dropped. `stability_check=False` is used in `_apply_change_event` because the filesystem event itself confirms the change.
+- **Rationale:** `watchdog` uses the native Windows API, requires no polling, and its queue+timer marshalling pattern avoids any direct Qt calls from non-GUI threads. Targeted indexing avoids unnecessary OCR re-runs and full-tree scans. Watch worker preemption keeps the UI responsive to explicit user requests.
+- **Alternatives considered:** Polling via a QTimer + `os.walk` diff (too slow and CPU-intensive); `ReadDirectoryChangesW` directly via ctypes (~300 lines, same result as watchdog); always running a full `index_folder` on any event (causes OCR re-runs and blocks the worker slot).
+- **Consequences:** `watchdog` is now an explicit declared dependency. Watch workers run at background priority and are preemptible by scan/search. Worker completion tokens prevent a cancelled watch worker from publishing a stale completion after a replacement operation starts, and the active slot is cleared before a valid completion is published. Reconciliation after missed events (e.g. application restart, disconnected network share) is handled by the manual "Scan / Rescan" button. Continuous monitoring and `index_applications` refresh on directory events are not yet implemented.
+
+### D-040 — Require stable metadata and bounded retries before monitor indexing
+- **Status:** Accepted and implemented for Stage 7A
+- **Context:** Watchdog create, modify, and rename-destination events can arrive while a file is still being copied, written, or temporarily locked. Indexing such content could persist incomplete OCR or embeddings, while deleting an existing record on a transient access error would reduce search accuracy.
+- **Decision:** `LocalIndex.index_single_file()` compares file size and `st_mtime_ns` across consecutive observations before writing an index record. Missing or changing files are deferred. `build_watch_task()` retries only the explicit transient-integrity failure with bounded cancellation-aware backoff; permanent errors are reported without indefinite retry. Rename processing indexes the destination first and removes the source record only after successful destination indexing.
+- **Rationale:** Metadata stability is a small, deterministic guard against incomplete writes and preserves the existing OCR/embedding reuse path for unchanged files. Bounded retries handle short-lived Windows locks without blocking independent event paths indefinitely, and deferred failures leave valid existing records intact.
+- **Consequences:** A file that remains unstable or inaccessible is reported as deferred and requires a later filesystem event or manual rescan. Automatic reconciliation, observer recovery, sleep/resume recovery, and application-shortcut refresh remain outside Stage 7A.
+
+### D-041 — Reconcile conservatively before recovering filesystem monitoring
+- **Status:** Accepted and implemented for Stage 7B
+- **Context:** Watchdog can miss events after observer termination, drive removal, or Windows sleep/resume. The index must recover without launching a full scan for every event or competing with user operations.
+- **Decision:** `MainWindow` owns a five-minute `QTimer` that schedules one `build_reconcile_task()` at a time through `WorkerController`. Reconciliation reuses `LocalIndex.index_folder()` metadata/OCR reuse and is deferred while scan, search, or watch work is active. `FolderMonitor` health polling reports `failed` and `root_missing` states while retaining the configured root. Recovery retries with bounded exponential backoff, reconciles a returned root first, and starts the observer only after reconciliation succeeds. Application reactivation requests the same recovery path.
+- **Rationale:** A GUI-owned timer keeps scheduling visible and shutdown-safe; the existing worker lifecycle prevents overlap and stale completions. Retaining the root while paused allows disconnected drives to return without losing the recovery target, and reconciliation-before-restart avoids resuming event delivery against a stale index.
+- **Consequences:** Reconciliation is intentionally not continuous per-event scanning and does not refresh Start Menu application shortcuts. Actual Windows suspend/resume, network-share, and drive-ejection behavior still require manual validation.
+
+### D-042 — Refresh application shortcuts transactionally within configured roots
+- **Status:** Accepted and implemented for Stage 7C.1
+- **Context:** Start Menu shortcuts were indexed during scans, but deleted shortcuts remained searchable. Refreshing them must not remove unrelated file, folder, screenshot, or out-of-scope application records.
+- **Decision:** `LocalIndex.index_applications()` discovers current `.lnk` files under the supplied roots, upserts their normalized Windows paths and metadata, and deletes stale `app` rows only when their normalized paths are within those same roots. Discovery occurs before the transaction; cancellation or any write failure rolls back the complete refresh. `build_application_refresh_task()` exposes the cancellable operation without adding monitoring or scheduling.
+- **Rationale:** Root-scoped stale cleanup preserves records owned by other application roots and all non-app records. Transactional replacement prevents a cancelled or failed refresh from leaving a partially updated shortcut index.
+- **Consequences:** Start Menu changes are not automatically observed yet; the existing scan path and the new task builder are the available refresh entry points until Stage 7C.2 adds dedicated monitoring.
+
+### D-043 — Monitor Start Menu roots independently and refresh through one worker
+- **Status:** Accepted and implemented for Stage 7C.2
+- **Context:** Application shortcuts must update automatically without coupling Start Menu events to screenshot-folder monitoring or allowing background refreshes to compete with user scans and searches.
+- **Decision:** Use a second `FolderMonitor` for configured per-user and machine-wide Start Menu roots. It schedules every available root immediately, retains unavailable roots for independent recovery, and emits the same debounced event batches to an application-specific coordinator. `MainWindow` coalesces those events into one pending application refresh and runs `build_application_refresh_task()` through the existing single-worker `WorkerController`. Refresh failures retry independently; healthy observers are not restarted because indexing failed.
+- **Rationale:** A separate monitor preserves screenshot monitoring and reconciliation behavior. Full transactional shortcut refresh is safer than per-event mutations because it handles create, modify, rename, and delete uniformly while scoped cleanup protects roots that could not be enumerated.
+- **Consequences:** Start Menu monitoring uses an additional watchdog observer and still requires live Windows validation, especially for permissions, root disappearance, and actual shortcut installation behavior.
+
+### D-044 — Include Desktop shortcuts and consume restored layout once
+- **Status:** Accepted and implemented
+- **Context:** Apps search must discover shortcuts on both Windows Desktops while preserving the existing Start Menu monitoring and root-scoped cleanup behavior. Restoring a window after a search must not reapply the initial cached-scan landing layout.
+- **Decision:** Add per-user and Public Desktop roots using `SHGetKnownFolderPath` when available, with environment fallbacks. Keep `.lnk` discovery path-based, search Start Menu roots recursively, search Desktop roots only at top level, and preserve records for unavailable or unsuccessfully enumerated roots. Track cached-scan data restoration separately from a one-shot pending landing-layout flag.
+- **Consequences:** Desktop shortcut changes use the existing independent application monitor and transactional refresh worker. Redirected Desktop and real minimize/restore rendering still require manual Windows validation.
+
+### D-045 — Extract PDF text as a standalone page-preserving component
+- **Status:** Accepted and implemented for Stage 9.1
+- **Context:** Document Memory Search needs local PDF text extraction without coupling the first stage to SQLite, UI, filesystem monitoring, or semantic search.
+- **Decision:** Use `pypdf>=5,<6` under its BSD-3-Clause license. `pdf_extractor.py` returns immutable metadata, one-based page text records, and controlled statuses for successful, empty, OCR-required, encrypted, corrupt, unsupported, and inaccessible inputs. Cancellation raises a dedicated exception before opening or between pages.
+- **Rationale:** pypdf is a lightweight pure-Python dependency compatible with the supported Windows/Python versions and does not require cloud services or native binaries. Page-level output preserves boundaries for later indexing and scanned-page OCR.
+- **Consequences:** PDF indexing, PDF semantic search, password handling, page rendering, and scanned-page OCR remain future work. A document with no extractable text is reported as OCR-required, although that cannot distinguish an image-only document from an intentionally blank PDF.
+
+### D-046 — Persist PDFs in dedicated document and page tables
+- **Status:** Accepted and implemented for Stage 9.2
+- **Context:** PDF text requires page boundaries, explicit extraction statuses, incremental refresh, and safe replacement without changing existing Files search behavior.
+- **Decision:** Upgrade the SQLite schema to version 2 with `pdf_documents` and `pdf_pages` tables. Keep the generic `items` row as a file record, store page text separately, and use streaming SHA-256 fingerprints after metadata changes or forced integrity checks. Replace a document and its pages through one savepoint; preserve prior pages when access is transient or the source changes during extraction.
+- **Rationale:** Dedicated tables avoid overloading `items.ocr_text` and preserve a future page-aware search model. Metadata-first reuse avoids hashing and extraction for unchanged files, while forced checks detect content changes that retain size and modification metadata.
+- **Consequences:** PDF content search, OCR for scanned pages, passwords, and embeddings remain deferred. Existing screenshot, generic-file, application indexing, and UI behavior are unchanged.
+
+### D-047 — Use SQLite FTS5 for local PDF keyword search
+- **Status:** Accepted and implemented for Stage 9.3
+- **Context:** Persisted PDF pages need responsive phrase, multi-term, and prefix keyword search without re-opening or extracting source files.
+- **Decision:** Upgrade the index to schema version 3 and maintain a `pdf_pages_fts` table transactionally with `pdf_documents` and `pdf_pages`. Search uses safe tokenized plain-text queries, explainable page ranking, bounded snippets, and a three-page-per-document limit. A bounded `LIKE` fallback is used only when the runtime lacks FTS5.
+- **Rationale:** FTS5 is available in the supported Python 3.13 runtime, requires no dependency, and avoids loading all page text into Python. Keeping the fallback preserves portability without changing the public search API.
+- **Consequences:** PDF keyword search is available through the Documents category and All search, but semantic PDF search, OCR, passwords, and exact-page viewer navigation remain future work.
+
+### D-048 — Render scanned PDF pages with pypdfium2 and atomically index OCR
+- **Status:** Accepted and implemented for Stage 9.4
+- **Context:** Image-only PDF pages need local OCR while selectable PDF text must remain authoritative.
+- **Decision:** Pin `pypdfium2==5.14.0`, render one eligible page at a time at bounded resolution, pass images to the existing Tesseract adapter with a 30-second timeout, and persist extracted/OCR provenance in schema version 4. Use whole-document SHA-256 reuse and whole-document atomic replacement; transient failures preserve the previous complete index.
+- **Rationale:** PDFium provides Windows x64 rendering without an additional system renderer. Atomic replacement prevents partial FTS results and generation tokens prevent stale same-path workers from recreating newer or deleted records.
+- **Consequences:** Pages with meaningful selectable text are never OCRed, even when scanned imagery is also present. The packaged build includes PDFium and its wrapper/component notices; Tesseract remains an external prerequisite.
+
 ## Proposed decisions to discuss
 
 These are not final decisions. Ask the developer before locking them in.

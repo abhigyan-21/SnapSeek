@@ -12,9 +12,10 @@ a = Analysis(
         (str(ROOT / "assets" / "icons"), "assets/icons"),
         (str(ROOT / "assets" / "logo" / "snapseek-icon.ico"), "assets/logo"),
         (str(ROOT / "assets" / "logo" / "snapseek-icon.png"), "assets/logo"),
+        (str(ROOT / "assets" / "licenses" / "pypdfium2" / "5.14.0"), "licenses/pypdfium2/5.14.0"),
     ],
     # semantic.py and ocr.py import their runtime packages dynamically.
-    hiddenimports=["fastembed", "pytesseract"],
+    hiddenimports=["fastembed", "pytesseract", "pypdfium2", "pypdfium2_raw", "watchdog", "watchdog.observers", "watchdog.observers.read_directory_changes"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

@@ -154,12 +154,17 @@ def scan_and_extract(
 
 
 def search_snapshot(
-    query: str, snapshot: ScanSnapshot, *, encoder: TextEncoder | None = None
+    query: str,
+    snapshot: ScanSnapshot,
+    *,
+    encoder: TextEncoder | None = None,
+    embedding_cache: dict[str, tuple[float, ...]] | None = None,
 ) -> list[SemanticSearchResult]:
     """Return the ten highest-ranked results for the desktop UI."""
     results = search_semantic(
         query,
         snapshot.records,
         encoder=encoder if encoder is not None else snapshot.encoder,
+        embedding_cache=embedding_cache,
     )
     return results[:DESKTOP_TOP_K]

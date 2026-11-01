@@ -109,6 +109,7 @@ def search_semantic(
     records: Iterable[OCRTextRecord],
     *,
     encoder: TextEncoder | None = None,
+    embedding_cache: dict[str, Sequence[float]] | None = None,
 ) -> list[SemanticSearchResult]:
     """Rank nonempty OCR records by cosine similarity to a query.
 
@@ -128,10 +129,24 @@ def search_semantic(
         encoder = load_semantic_encoder()
 
     try:
-        document_vectors = [
-            _as_vector(vector, label="document")
-            for vector in encoder.embed(record.ocr_text for record in usable_records)
-        ]
+        cached_vectors = []
+        uncached_records: list[tuple[int, OCRTextRecord, str]] = []
+        for record in usable_records:
+            cache_key = str(record.image.path.resolve(strict=False)).casefold()
+            cached = embedding_cache.get(cache_key) if embedding_cache is not None else None
+            if cached is None:
+                uncached_records.append((len(cached_vectors), record, cache_key))
+                cached_vectors.append(None)
+            else:
+                cached_vectors.append(_as_vector(cached, label="document"))
+        if uncached_records:
+            generated = iter(encoder.embed(record.ocr_text for _, record, _ in uncached_records))
+            for position, _, cache_key in uncached_records:
+                vector = _as_vector(next(generated), label="document")
+                cached_vectors[position] = vector
+                if embedding_cache is not None:
+                    embedding_cache[cache_key] = vector
+        document_vectors = [vector for vector in cached_vectors if vector is not None]
         query_vectors = list(encoder.query_embed(normalized_query))
     except Exception as error:
         if isinstance(error, SemanticSearchError):
